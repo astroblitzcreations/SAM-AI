@@ -1,0 +1,661 @@
+[gd_scene format=3 uid="uid://pyphjf5iounj"]
+
+[ext_resource type="Script" uid="uid://b2y6w3yxwkxxh" path="res://scripts/main.gd" id="1_main"]
+
+[node name="SamStudio" type="Control" unique_id=169950312]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="Background" type="ColorRect" parent="." unique_id=888335206]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.031, 0.043, 0.071, 1)
+
+[node name="BackgroundImage" type="TextureRect" parent="." unique_id=47902696]
+modulate = Color(1, 1, 1, 0.38)
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 6
+
+[node name="Page" type="VBoxContainer" parent="." unique_id=1591342297]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 18.0
+offset_top = 18.0
+offset_right = -18.0
+offset_bottom = -18.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 12
+
+[node name="Header" type="HBoxContainer" parent="Page" unique_id=799902012]
+custom_minimum_size = Vector2(0, 62)
+layout_mode = 2
+
+[node name="Brand" type="Label" parent="Page/Header" unique_id=1860032721]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.302, 0.933, 0.918, 1)
+theme_override_font_sizes/font_size = 22
+text = "SAM-AI v1.0.2 by forge & Makazhan"
+
+[node name="StatusDot" type="Label" parent="Page/Header" unique_id=429073866]
+layout_mode = 2
+text = "●"
+
+[node name="StatusLabel" type="Label" parent="Page/Header" unique_id=648134960]
+layout_mode = 2
+text = " BOOTING ENGINE"
+
+[node name="Tabs" type="TabContainer" parent="Page" unique_id=1635040474]
+layout_mode = 2
+size_flags_vertical = 3
+current_tab = 0
+
+[node name="Chat" type="VBoxContainer" parent="Page/Tabs" unique_id=1555620352]
+layout_mode = 2
+theme_override_constants/separation = 8
+metadata/_tab_index = 0
+
+[node name="TopPadding" type="Control" parent="Page/Tabs/Chat"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="ChatLog" type="RichTextLabel" parent="Page/Tabs/Chat" unique_id=1923495675]
+layout_mode = 2
+size_flags_vertical = 3
+focus_mode = 2
+bbcode_enabled = true
+scroll_following = true
+selection_enabled = true
+
+[node name="Composer" type="VBoxContainer" parent="Page/Tabs/Chat" unique_id=1210458475]
+custom_minimum_size = Vector2(0, 245)
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Input" type="TextEdit" parent="Page/Tabs/Chat/Composer" unique_id=1641262614]
+custom_minimum_size = Vector2(0, 135)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+focus_mode = 2
+editable = true
+placeholder_text = "Message Sam...  Enter sends • Shift+Enter adds a line • ↑/↓ recalls"
+wrap_mode = 1
+
+[node name="AttachmentPreview" type="TextureRect" parent="Page/Tabs/Chat/Composer"]
+visible = false
+custom_minimum_size = Vector2(150, 112)
+layout_mode = 2
+mouse_filter = 1
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Actions" type="HBoxContainer" parent="Page/Tabs/Chat/Composer" unique_id=1410246728]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Send" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=1392533883]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "TRANSMIT"
+
+[node name="Abort" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=69959892]
+layout_mode = 2
+size_flags_horizontal = 3
+disabled = true
+text = "ABORT"
+
+[node name="Attach" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=2064711470]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "📎 ATTACH FILE"
+tooltip_text = "Attach an image, text document, source code, JSON, Markdown, or log file — or drag and drop it anywhere"
+
+[node name="Microphone" type="Button" parent="Page/Tabs/Chat/Composer/Actions"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "🎙 START TALKING"
+tooltip_text = "Click to record, then click again to transcribe locally"
+
+[node name="NewSession" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=1253765534]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "NEW SESSION"
+
+[node name="ClearScreen" type="Button" parent="Page/Tabs/Chat/Composer/Actions"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "CLEAR SCREEN"
+
+[node name="CopyChat" type="Button" parent="Page/Tabs/Chat/Composer/Actions"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "COPY CHAT"
+
+[node name="AttachmentLabel" type="Label" parent="Page/Tabs/Chat" unique_id=863294683]
+layout_mode = 2
+text = "Drop an image, text, code, JSON, Markdown, or log file here • No file attached"
+
+[node name="VoiceBar" type="HBoxContainer" parent="Page/Tabs/Chat"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="VoiceStatus" type="Label" parent="Page/Tabs/Chat/VoiceBar"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "VOICE • READY"
+
+[node name="ThemeButton" type="Button" parent="Page/Tabs/Chat/VoiceBar"]
+layout_mode = 2
+text = "🎨 THEME"
+
+[node name="ChatAutoSpeak" type="CheckButton" parent="Page/Tabs/Chat/VoiceBar"]
+layout_mode = 2
+text = "SAM TALKS"
+tooltip_text = "Automatically speak Sam's replies; code blocks are not read aloud"
+
+[node name="StopVoice" type="Button" parent="Page/Tabs/Chat/VoiceBar"]
+layout_mode = 2
+text = "■ STOP VOICE"
+
+[node name="MicrophoneInput" type="AudioStreamPlayer" parent="."]
+
+[node name="VoiceOutput" type="AudioStreamPlayer" parent="."]
+
+[node name="MemoryCore" type="VBoxContainer" parent="Page/Tabs" unique_id=402905561]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+metadata/_tab_index = 1
+
+[node name="TopPadding" type="Control" parent="Page/Tabs/MemoryCore"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="MemoryHint" type="Label" parent="Page/Tabs/MemoryCore" unique_id=1342629009]
+layout_mode = 2
+text = "LIVE SYSTEM MEMORY • Reloaded from disk before every response"
+
+[node name="MemoryEditor" type="TextEdit" parent="Page/Tabs/MemoryCore" unique_id=1960638772]
+layout_mode = 2
+size_flags_vertical = 3
+wrap_mode = 1
+
+[node name="MemoryActions" type="HBoxContainer" parent="Page/Tabs/MemoryCore" unique_id=175279508]
+layout_mode = 2
+
+[node name="SaveMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions" unique_id=1006452618]
+layout_mode = 2
+text = "SAVE MEMORY"
+
+[node name="ReloadMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions" unique_id=1671083449]
+layout_mode = 2
+text = "RELOAD FROM DISK"
+
+[node name="UndoMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions"]
+layout_mode = 2
+text = "↶ UNDO"
+
+[node name="RedoMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions"]
+layout_mode = 2
+text = "↷ REDO"
+
+[node name="EngineSetup" type="VBoxContainer" parent="Page/Tabs" unique_id=859989413]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+metadata/_tab_index = 2
+
+[node name="TopPadding" type="Control" parent="Page/Tabs/EngineSetup"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="SettingsScroll" type="ScrollContainer" parent="Page/Tabs/EngineSetup"]
+custom_minimum_size = Vector2(0, 260)
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="Settings" type="GridContainer" parent="Page/Tabs/EngineSetup/SettingsScroll" unique_id=2046329170]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/h_separation = 12
+theme_override_constants/v_separation = 10
+columns = 3
+
+[node name="ModelLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=442981595]
+layout_mode = 2
+text = "MODEL (.GGUF)"
+
+[node name="ModelPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=820772507]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BrowseModel" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1002653352]
+layout_mode = 2
+text = "BROWSE"
+
+[node name="ServerLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=697070635]
+layout_mode = 2
+text = "LLAMA SERVER"
+
+[node name="ServerPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=257794549]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BrowseServer" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1448701386]
+layout_mode = 2
+text = "BROWSE"
+
+[node name="MmprojLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1600137343]
+layout_mode = 2
+text = "PRIMARY MMPROJ (OPTIONAL)"
+tooltip_text = "Only for a matching vision-language model. Qwen2.5-Coder is text-only, so leave this empty."
+
+[node name="MmprojPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=667374840]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Leave blank for Qwen Coder • requires a matching vision model projector"
+
+[node name="BrowseMmproj" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=925872698]
+layout_mode = 2
+text = "BROWSE"
+
+[node name="VisionModelLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+layout_mode = 2
+text = "AUTO VISION MODEL"
+
+[node name="VisionModelPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Optional smaller VLM used only for image messages"
+
+[node name="BrowseVisionModel" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+layout_mode = 2
+text = "BROWSE"
+
+[node name="VisionMmprojLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+layout_mode = 2
+text = "VISION MMPROJ"
+
+[node name="VisionMmprojPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Must exactly match the selected vision model"
+
+[node name="BrowseVisionMmproj" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+layout_mode = 2
+text = "BROWSE"
+
+[node name="MemoryLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=65583427]
+layout_mode = 2
+text = "MEMORY FILE"
+
+[node name="MemoryPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=2139883578]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BrowseMemory" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1902849938]
+layout_mode = 2
+text = "BROWSE"
+
+[node name="BackgroundLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=80268909]
+layout_mode = 2
+text = "BACKGROUND IMAGE"
+
+[node name="BackgroundPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=202252699]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BrowseBackground" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1892243893]
+layout_mode = 2
+text = "BROWSE"
+
+[node name="PortLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=351747770]
+layout_mode = 2
+text = "PORT"
+
+[node name="Port" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=161841146]
+layout_mode = 2
+
+[node name="PortSpacer" type="Control" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=2108478351]
+layout_mode = 2
+
+[node name="GpuLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1553529728]
+layout_mode = 2
+text = "GPU LAYERS"
+
+[node name="GpuLayers" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1561729350]
+layout_mode = 2
+
+[node name="GpuSpacer" type="Control" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=165838359]
+layout_mode = 2
+
+[node name="ContextLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1240396482]
+layout_mode = 2
+text = "CONTEXT"
+
+[node name="ContextSize" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1782821029]
+layout_mode = 2
+
+[node name="ContextSpacer" type="Control" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1558348294]
+layout_mode = 2
+
+[node name="TokensLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1558614985]
+layout_mode = 2
+text = "MAX TOKENS"
+
+[node name="MaxTokens" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=26286103]
+layout_mode = 2
+
+[node name="TokensSpacer" type="Control" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=144132892]
+layout_mode = 2
+
+[node name="TemperatureLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1672941992]
+layout_mode = 2
+text = "TEMPERATURE"
+
+[node name="Temperature" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1036758989]
+layout_mode = 2
+
+[node name="TemperatureSpacer" type="Control" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=2011784250]
+layout_mode = 2
+
+[node name="EngineNote" type="Label" parent="Page/Tabs/EngineSetup" unique_id=1471157813]
+layout_mode = 2
+text = "Godot owns the interface; llama.cpp remains the private local CUDA engine. A vision model and MMPROJ must be an exact matching pair."
+
+[node name="AutoVisionSwitch" type="CheckButton" parent="Page/Tabs/EngineSetup"]
+layout_mode = 2
+button_pressed = true
+text = "AUTO-SWITCH TO VISION MODEL FOR IMAGES, THEN RESTORE PRIMARY MODEL"
+tooltip_text = "Keeps the stronger coding/chat model active normally and loads the smaller vision pair only for image messages"
+
+[node name="VoiceHeading" type="Label" parent="Page/Tabs/EngineSetup"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.302, 0.933, 0.918, 1)
+theme_override_font_sizes/font_size = 18
+text = "VOICE + MICROPHONE"
+
+[node name="VoiceNote" type="Label" parent="Page/Tabs/EngineSetup"]
+layout_mode = 2
+text = "Privacy default: the microphone only listens after START TALKING is pressed. Transcripts stay in the composer until you manually send them."
+autowrap_mode = 2
+
+[node name="VoiceOptions" type="HBoxContainer" parent="Page/Tabs/EngineSetup"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="AutoSpeak" type="CheckButton" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+layout_mode = 2
+text = "SAM SPEAKS REPLIES"
+tooltip_text = "Read Sam's prose responses aloud; fenced code is skipped"
+
+[node name="AutoSend" type="CheckButton" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+layout_mode = 2
+text = "AUTO-SEND MIC TRANSCRIPTS"
+tooltip_text = "When enabled, a finished voice transcript is sent immediately instead of waiting in the composer"
+
+[node name="Voice" type="OptionButton" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+layout_mode = 2
+tooltip_text = "Choose the local Kokoro speaking voice"
+item_count = 4
+popup/item_0/text = "Heart"
+popup/item_0/id = 0
+popup/item_1/text = "Sarah"
+popup/item_1/id = 1
+popup/item_2/text = "Adam"
+popup/item_2/id = 2
+popup/item_3/text = "Michael"
+popup/item_3/id = 3
+
+[node name="TestVoice" type="Button" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+layout_mode = 2
+text = "▶ TEST SELECTED VOICE"
+
+[node name="VoicePrivacy" type="Label" parent="Page/Tabs/EngineSetup"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.5098, 0.5725, 0.6784, 1)
+text = "Microphone capture is push-to-talk, processed locally, and locked while Sam generates or speaks. Auto-send is off for new installations."
+autowrap_mode = 2
+
+[node name="EngineActions" type="HBoxContainer" parent="Page/Tabs/EngineSetup" unique_id=2104715158]
+layout_mode = 2
+
+[node name="UseQwenCoder" type="Button" parent="Page/Tabs/EngineSetup/EngineActions"]
+layout_mode = 2
+text = "USE QWEN 2.5 CODER 14B"
+tooltip_text = "Select the locally downloaded Qwen2.5-Coder-14B Q4_K_M model and recommended RTX 3060 settings"
+
+[node name="UseQwenVision" type="Button" parent="Page/Tabs/EngineSetup/EngineActions"]
+layout_mode = 2
+text = "USE QWEN VISION 7B"
+tooltip_text = "Configure the downloaded Qwen2.5-VL-7B Q4_K_M and its matching F16 projector for automatic image analysis"
+
+[node name="SaveRestart" type="Button" parent="Page/Tabs/EngineSetup/EngineActions" unique_id=1497474763]
+layout_mode = 2
+text = "SAVE + RELOAD ENGINE"
+
+[node name="StopEngine" type="Button" parent="Page/Tabs/EngineSetup/EngineActions" unique_id=287138149]
+layout_mode = 2
+text = "STOP ENGINE"
+
+[node name="ApplyBackground" type="Button" parent="Page/Tabs/EngineSetup/EngineActions" unique_id=1056775925]
+layout_mode = 2
+text = "APPLY BACKGROUND"
+
+[node name="SetupCheck" type="Button" parent="Page/Tabs/EngineSetup/EngineActions"]
+layout_mode = 2
+text = "SETUP CHECK"
+tooltip_text = "Reopen first-run checks for the model, engine, CUDA, Windows runtime, and voice package"
+
+[node name="DebugTelemetry" type="VBoxContainer" parent="Page/Tabs" unique_id=1375960525]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+metadata/_tab_index = 3
+
+[node name="TopPadding" type="Control" parent="Page/Tabs/DebugTelemetry"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="Logs" type="RichTextLabel" parent="Page/Tabs/DebugTelemetry" unique_id=235818082]
+layout_mode = 2
+size_flags_vertical = 3
+focus_mode = 2
+bbcode_enabled = true
+scroll_following = true
+selection_enabled = true
+
+[node name="ClearLog" type="Button" parent="Page/Tabs/DebugTelemetry" unique_id=517402675]
+layout_mode = 2
+text = "CLEAR LOG"
+
+[node name="CopyLog" type="Button" parent="Page/Tabs/DebugTelemetry"]
+layout_mode = 2
+text = "COPY LOG"
+
+[node name="SystemSpecs" type="VBoxContainer" parent="Page/Tabs"]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 10
+metadata/_tab_index = 4
+
+[node name="TopPadding" type="Control" parent="Page/Tabs/SystemSpecs"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="Header" type="HBoxContainer" parent="Page/Tabs/SystemSpecs"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="Page/Tabs/SystemSpecs/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 22
+text = "SYSTEM COMPATIBILITY LAB"
+
+[node name="Refresh" type="Button" parent="Page/Tabs/SystemSpecs/Header"]
+layout_mode = 2
+text = "↻ REFRESH SPECS"
+
+[node name="AskSam" type="Button" parent="Page/Tabs/SystemSpecs/Header"]
+layout_mode = 2
+text = "✦ ASK SAM ABOUT THIS"
+
+[node name="Report" type="RichTextLabel" parent="Page/Tabs/SystemSpecs"]
+layout_mode = 2
+size_flags_vertical = 3
+focus_mode = 2
+bbcode_enabled = true
+selection_enabled = true
+text = "Scanning hardware…"
+
+[node name="Toast" type="Label" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 480.0
+offset_top = 76.0
+offset_right = -480.0
+offset_bottom = 122.0
+grow_horizontal = 2
+theme_override_colors/font_color = Color(0.08, 0.12, 0.18, 1)
+theme_override_colors/font_shadow_color = Color(0, 0, 0, 0.7)
+theme_override_constants/shadow_offset_x = 1
+theme_override_constants/shadow_offset_y = 2
+theme_override_font_sizes/font_size = 17
+text = "✓ Saved"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="FirstRunSetup" type="ColorRect" parent="."]
+visible = false
+z_index = 50
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.015, 0.027, 0.055, 0.97)
+
+[node name="Center" type="CenterContainer" parent="FirstRunSetup"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="PanelContainer" parent="FirstRunSetup/Center"]
+custom_minimum_size = Vector2(780, 570)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="FirstRunSetup/Center/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 32
+theme_override_constants/margin_top = 28
+theme_override_constants/margin_right = 32
+theme_override_constants/margin_bottom = 28
+
+[node name="Content" type="VBoxContainer" parent="FirstRunSetup/Center/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 14
+
+[node name="TitleRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content/TitleRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.302, 0.933, 0.918, 1)
+theme_override_font_sizes/font_size = 28
+text = "WELCOME TO SAM-AI"
+
+[node name="SetupLater" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/TitleRow"]
+custom_minimum_size = Vector2(46, 42)
+layout_mode = 2
+tooltip_text = "Close this wizard and open the Modules tab. Setup will remain incomplete."
+text = "✕"
+
+[node name="Intro" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+layout_mode = 2
+text = "SAM-AI runs privately on this computer. Before the first launch, select a GGUF language model and the llama.cpp Windows engine. The setup check will verify required local components."
+autowrap_mode = 2
+
+[node name="ModelLabel" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+layout_mode = 2
+text = "1  LANGUAGE MODEL (.GGUF)"
+
+[node name="ModelRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+layout_mode = 2
+
+[node name="ModelPath" type="LineEdit" parent="FirstRunSetup/Center/Panel/Margin/Content/ModelRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Choose a downloaded GGUF model"
+
+[node name="BrowseModel" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/ModelRow"]
+layout_mode = 2
+text = "BROWSE MODEL"
+
+[node name="ServerLabel" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+layout_mode = 2
+text = "2  LLAMA.CPP WINDOWS ENGINE"
+
+[node name="ServerRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+layout_mode = 2
+
+[node name="ServerPath" type="LineEdit" parent="FirstRunSetup/Center/Panel/Margin/Content/ServerRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Choose llama-server.exe"
+
+[node name="BrowseServer" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/ServerRow"]
+layout_mode = 2
+text = "BROWSE ENGINE"
+
+[node name="Checks" type="RichTextLabel" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+custom_minimum_size = Vector2(0, 170)
+layout_mode = 2
+bbcode_enabled = true
+selection_enabled = true
+
+[node name="Actions" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="CheckAgain" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions"]
+layout_mode = 2
+text = "CHECK COMPONENTS"
+
+[node name="WindowsRuntime" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions"]
+layout_mode = 2
+text = "GET WINDOWS RUNTIME"
+
+[node name="Complete" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "COMPLETE SETUP + START SAM"

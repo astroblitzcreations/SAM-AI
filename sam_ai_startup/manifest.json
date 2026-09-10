@@ -1,0 +1,55 @@
+{
+  "name": "SAM-AI Local Intelligence Startup",
+  "version": "1.0.0",
+  "type": "decorative_loop_background",
+  "duration_seconds": 12.0,
+  "fps": 30,
+  "frame_count": 360,
+  "audio": false,
+  "baked_loading_text": false,
+  "baked_progress": false,
+  "baked_status_panel": false,
+  "mathematically_periodic_motion": true,
+  "base_artwork_original_pixels": [
+    1672,
+    941
+  ],
+  "render_pixels": [
+    1920,
+    1080
+  ],
+  "scene_path": "res://sam_ai_startup/SAMStartupBackground.tscn",
+  "default_video_path": "res://sam_ai_startup/media/sam_ai_startup_720p.ogv",
+  "optional_high_resolution_video_path": "res://sam_ai_startup/media/sam_ai_startup_1080p.ogv",
+  "poster_path": "res://sam_ai_startup/media/sam_ai_startup_poster.png",
+  "overlay_node": "Artwork/OverlayRoot/StatusSafeArea",
+  "overlay_safe_area_normalized": {
+    "x": 0.3,
+    "y": 0.3,
+    "width": 0.4,
+    "height": 0.33
+  },
+  "overlay_safe_area_at_1080p": {
+    "x": 576,
+    "y": 324,
+    "width": 768,
+    "height": 356.4
+  },
+  "suggested_panel": {
+    "fill": "#081421",
+    "fill_alpha": 0.94,
+    "text": "#EAF4FF",
+    "secondary_text": "#9BB3CC",
+    "accent": "#21D7F3",
+    "error": "#FF7D86",
+    "corner_radius_px_at_1080p": 18,
+    "padding_px_at_1080p": 30,
+    "float_amplitude_px_at_1080p": 3,
+    "float_period_seconds": 6
+  },
+  "loop_does_not_control_readiness": true,
+  "readiness_owner": "existing_application_engine_manager",
+  "godot_wrapper_target": "Godot 4.4+; verify in installed version",
+  "godot_wrapper_runtime_tested": false,
+  "network_dependencies": []
+}

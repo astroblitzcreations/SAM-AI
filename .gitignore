@@ -1,0 +1,10 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+/build/
+/sandbox-test/
+/github-release/
+*.TMP
+*.tmp
+__pycache__/
+*.pyc
