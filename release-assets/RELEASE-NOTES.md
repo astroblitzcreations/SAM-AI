@@ -1,4 +1,15 @@
-# SAM-AI v1.2.3
+# SAM-AI v1.2.4
+
+## Fixed in v1.2.4
+
+- Protected Windows processes with unavailable executable paths can now be trusted or blocked using a clearly labeled process-name fallback identity.
+- `svchost.exe` and similar protected processes no longer ignore the Trust App button or repeatedly alert after being remembered.
+- Remembering an app immediately removes any already-queued duplicate alerts for the same identity.
+- Name-fallback decisions appear in Guard Policies and can be changed or removed without requesting an unusable path-based firewall rule.
+- More Info now closes the active alert before opening its investigation window, eliminating Godot's competing-exclusive-child error.
+- Alert delivery pauses while a secondary investigation window is open and resumes after it closes.
+
+## Fixed in v1.2.3
 
 ## Fixed in v1.2.3
 

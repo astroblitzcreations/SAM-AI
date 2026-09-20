@@ -528,6 +528,7 @@ var security_seen_connections: Dictionary = {}
 var security_alert_baseline_ready := false
 var security_alert_queue: Array[Dictionary] = []
 var security_alert_dialog_open := false
+var security_secondary_dialog_open := false
 var security_refresh_due_ms := 0
 var security_verify_requested := false
 var security_lockdown_active := false
@@ -11453,12 +11454,14 @@ func populate_security_policies(items: Array) -> void:
 	for trusted_path in remembered_network_paths("network_trusted_apps"):
 		var path := str(trusted_path)
 		var key := normalized_network_app_path(path)
-		if not grouped.has(key): grouped[key] = {"name":path.get_file(), "path":path, "action":"Trusted", "enabled":true, "profile":"SAM memory", "directions":["IN", "OUT"], "rules":[]}
+		var display_name := path.trim_prefix("name:") if path.begins_with("name:") else path.get_file()
+		if not grouped.has(key): grouped[key] = {"name":display_name, "path":path, "action":"Trusted", "enabled":true, "profile":"SAM memory • name fallback" if path.begins_with("name:") else "SAM memory", "directions":["IN", "OUT"], "rules":[]}
 		else: grouped[key].action = "Trusted"
 	for blocked_path in remembered_network_paths("network_blocked_apps"):
 		var path := str(blocked_path)
 		var key := normalized_network_app_path(path)
-		if not grouped.has(key): grouped[key] = {"name":path.get_file(), "path":path, "action":"Blocked", "enabled":true, "profile":"SAM memory", "directions":["IN", "OUT"], "rules":[]}
+		var display_name := path.trim_prefix("name:") if path.begins_with("name:") else path.get_file()
+		if not grouped.has(key): grouped[key] = {"name":display_name, "path":path, "action":"Blocked", "enabled":true, "profile":"SAM memory • name fallback" if path.begins_with("name:") else "SAM memory", "directions":["IN", "OUT"], "rules":[]}
 		else: grouped[key].action = "Blocked"
 	security_policies_tree.clear()
 	var root := security_policies_tree.create_item()
@@ -11520,12 +11523,14 @@ func show_selected_policy_details() -> void:
 func change_selected_policy(action: String) -> void:
 	if security_selected_path.is_empty(): show_toast("Select an application policy first"); return
 	remember_network_app(security_selected_path, action == "allow")
-	run_firewall_admin_action(action, security_selected_name, security_selected_path)
+	if FileAccess.file_exists(security_selected_path): run_firewall_admin_action(action, security_selected_name, security_selected_path)
+	else: show_toast("SAM memory updated • no readable executable path for a Windows rule")
 
 func remove_selected_policy() -> void:
 	if security_selected_path.is_empty(): show_toast("Select an application policy first"); return
 	forget_network_app(security_selected_path)
-	run_firewall_admin_action("policy_remove", security_selected_name, security_selected_path)
+	if FileAccess.file_exists(security_selected_path): run_firewall_admin_action("policy_remove", security_selected_name, security_selected_path)
+	else: populate_security_policies(security_rules); show_toast("Name-fallback policy removed")
 
 func ask_sam_about_policy() -> void:
 	if security_selected_policy.is_empty(): show_toast("Select an application policy first"); return
@@ -11713,22 +11718,29 @@ func detect_new_security_connections(items: Array) -> void:
 func normalized_network_app_path(path: String) -> String:
 	return path.strip_edges().replace("/", "\\").to_lower()
 
+func network_app_identity(connection: Dictionary) -> String:
+	var path := str(connection.get("path", "")).strip_edges()
+	if not path.is_empty():
+		return normalized_network_app_path(path)
+	var name := str(connection.get("name", "unknown")).strip_edges().to_lower()
+	return "name:" + name if not name.is_empty() and name != "unknown" else ""
+
 func remembered_network_paths(setting_name: String) -> Array:
 	var stored = settings.get(setting_name, [])
 	return stored if stored is Array else []
 
 func is_remembered_network_app(connection: Dictionary) -> bool:
-	var path := normalized_network_app_path(str(connection.get("path", "")))
-	if path.is_empty():
+	var identity := network_app_identity(connection)
+	if identity.is_empty():
 		return false
 	for setting_name in ["network_trusted_apps", "network_blocked_apps"]:
 		for stored_path in remembered_network_paths(setting_name):
-			if normalized_network_app_path(str(stored_path)) == path:
+			if normalized_network_app_path(str(stored_path)) == identity:
 				return true
 	return false
 
-func remember_network_app(path: String, trusted: bool) -> void:
-	var normalized := normalized_network_app_path(path)
+func remember_network_app(identity_value: String, trusted: bool) -> void:
+	var normalized := normalized_network_app_path(identity_value)
 	if normalized.is_empty():
 		show_toast("The app path is unavailable, so SAM cannot remember it")
 		return
@@ -11741,9 +11753,12 @@ func remember_network_app(path: String, trusted: bool) -> void:
 	var already_saved := false
 	for stored_path in target:
 		if normalized_network_app_path(str(stored_path)) == normalized: already_saved = true; break
-	if not already_saved: target.append(path)
+	if not already_saved: target.append(identity_value)
 	settings[target_key] = target
 	settings[other_key] = other
+	for index in range(security_alert_queue.size() - 1, -1, -1):
+		if network_app_identity(security_alert_queue[index]) == normalized:
+			security_alert_queue.remove_at(index)
 	save_json(SETTINGS_FILE, settings)
 	show_toast(("Trusted app remembered" if trusted else "Blocked app remembered") + " • future alerts suppressed")
 	populate_security_policies(security_rules)
@@ -11765,7 +11780,7 @@ func is_external_security_connection(value: Dictionary) -> bool:
 	return not remote.begins_with("127.") and not remote.begins_with("[::1]") and not remote.begins_with("0.0.0.0")
 
 func show_next_security_alert() -> void:
-	if security_alert_dialog_open or security_alert_queue.is_empty() or not bool(settings.get("network_guard_enabled", false)):
+	if security_alert_dialog_open or security_secondary_dialog_open or security_alert_queue.is_empty() or not bool(settings.get("network_guard_enabled", false)):
 		return
 	var connection: Dictionary = security_alert_queue.pop_front()
 	security_alert_dialog_open = true
@@ -11780,14 +11795,26 @@ func show_next_security_alert() -> void:
 	dialog.custom_action.connect(func(action: StringName):
 		var app_name := str(connection.get("name", "unknown"))
 		var app_path := str(connection.get("path", ""))
-		if action == &"allow" and FileAccess.file_exists(app_path): remember_network_app(app_path, true); run_firewall_admin_action("allow", app_name, app_path); dialog.hide()
-		elif action == &"block" and FileAccess.file_exists(app_path): remember_network_app(app_path, false); run_firewall_admin_action("block", app_name, app_path); dialog.hide()
-		elif action == &"more": show_network_research_options(connection))
+		var identity := network_app_identity(connection)
+		if action == &"allow":
+			remember_network_app(identity, true)
+			if FileAccess.file_exists(app_path): run_firewall_admin_action("allow", app_name, app_path)
+			else: show_toast("Trusted by process name • firewall rule needs a readable executable path")
+			dialog.hide()
+		elif action == &"block":
+			remember_network_app(identity, false)
+			if FileAccess.file_exists(app_path): run_firewall_admin_action("block", app_name, app_path)
+			else: show_toast("Alert suppression saved • Windows cannot create an app rule without its path")
+			dialog.hide()
+		elif action == &"more":
+			security_secondary_dialog_open = true
+			dialog.hide()
+			show_network_research_options.call_deferred(connection))
 	dialog.visibility_changed.connect(func():
 		if not dialog.visible:
 			security_alert_dialog_open = false
 			dialog.queue_free()
-			show_next_security_alert.call_deferred())
+			if not security_secondary_dialog_open: show_next_security_alert.call_deferred())
 	add_child(dialog); apply_theme_recursive(dialog); style_security_dialog(dialog, colors.amber); dialog.popup_centered(Vector2i(820, 560))
 
 func request_emergency_lockdown() -> void:
@@ -11864,6 +11891,7 @@ func ask_sam_about_connection(connection: Dictionary) -> void:
 	show_toast("Complete network context placed in chat • transmit when ready")
 
 func show_network_research_options(connection: Dictionary) -> void:
+	security_secondary_dialog_open = true
 	var dialog := AcceptDialog.new()
 	dialog.title = "INVESTIGATE NETWORK ACTIVITY"
 	dialog.dialog_text = connection_details_text(connection) + "\n\nChoose an investigation source. IP LOOKUP is best when the owning process is unknown."
@@ -11878,9 +11906,14 @@ func show_network_research_options(connection: Dictionary) -> void:
 		elif action == &"sam": ask_sam_about_connection(connection)
 		elif action == &"copy": DisplayServer.clipboard_set(connection_details_text(connection)); show_toast("Network details copied"))
 	var close_dialog := func():
-		if is_instance_valid(dialog) and not dialog.is_queued_for_deletion(): dialog.hide(); dialog.queue_free()
+		if is_instance_valid(dialog) and not dialog.is_queued_for_deletion():
+			dialog.hide()
+			dialog.queue_free()
+		security_secondary_dialog_open = false
+		show_next_security_alert.call_deferred()
 	dialog.get_ok_button().pressed.connect(close_dialog)
 	dialog.close_requested.connect(close_dialog)
+	dialog.canceled.connect(close_dialog)
 	add_child(dialog); apply_theme_recursive(dialog); style_security_dialog(dialog, colors.cyan); dialog.popup_centered(Vector2i(820, 500))
 
 func request_end_selected_process(force: bool) -> void:
@@ -12127,7 +12160,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.3 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.4 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
