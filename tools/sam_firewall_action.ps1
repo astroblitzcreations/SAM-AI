@@ -1,16 +1,8 @@
-param(
-    [Parameter(Mandatory=$true)][ValidateSet('block','unblock')][string]$Action,
-    [Parameter(Mandatory=$true)][string]$AppName,
-    [Parameter(Mandatory=$true)][string]$AppPath
-)
-$ErrorActionPreference = 'Stop'
-if (-not (Test-Path -LiteralPath $AppPath -PathType Leaf)) { throw 'The selected executable no longer exists.' }
-$safeName = ($AppName -replace '[^a-zA-Z0-9._ -]','').Trim()
-if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = [IO.Path]::GetFileName($AppPath) }
-$inName = "SAM Network Guard - $safeName - IN"
-$outName = "SAM Network Guard - $safeName - OUT"
-Get-NetFirewallRule -DisplayName $inName,$outName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-if ($Action -eq 'block') {
-    New-NetFirewallRule -DisplayName $inName -Direction Inbound -Action Block -Program $AppPath -Profile Any -Enabled True | Out-Null
-    New-NetFirewallRule -DisplayName $outName -Direction Outbound -Action Block -Program $AppPath -Profile Any -Enabled True | Out-Null
-}
+param([Parameter(Mandatory=$true)][ValidateSet('block','allow','unblock','lockdown_on','lockdown_off','rule_enable','rule_disable','rule_remove')][string]$Action,[string]$AppName='',[string]$AppPath='',[string]$RuleName='')
+$ErrorActionPreference='Stop'
+if($Action -in @('lockdown_on','lockdown_off')) { $names=@('SAM Network Guard - EMERGENCY LOCKDOWN - IN','SAM Network Guard - EMERGENCY LOCKDOWN - OUT'); Get-NetFirewallRule -DisplayName $names -ErrorAction SilentlyContinue | Remove-NetFirewallRule; if($Action -eq 'lockdown_on'){New-NetFirewallRule -DisplayName $names[0] -Direction Inbound -Action Block -Profile Any -Enabled True|Out-Null; New-NetFirewallRule -DisplayName $names[1] -Direction Outbound -Action Block -Profile Any -Enabled True|Out-Null}; exit 0 }
+if($Action -in @('rule_enable','rule_disable','rule_remove')) { if($RuleName -notlike 'SAM Network Guard -*'){throw 'Only SAM-owned rules can be changed here.'}; $target=Get-NetFirewallRule -DisplayName $RuleName -ErrorAction Stop; if($Action -eq 'rule_remove'){$target|Remove-NetFirewallRule}else{$target|Set-NetFirewallRule -Enabled $(if($Action -eq 'rule_enable'){'True'}else{'False'})}; exit 0 }
+if(-not(Test-Path -LiteralPath $AppPath -PathType Leaf)){throw 'The selected executable no longer exists.'}
+$safeName=($AppName -replace '[^a-zA-Z0-9._ -]','').Trim(); if(-not $safeName){$safeName=[IO.Path]::GetFileName($AppPath)}
+$names=@("SAM Network Guard - $safeName - IN","SAM Network Guard - $safeName - OUT"); Get-NetFirewallRule -DisplayName $names -ErrorAction SilentlyContinue|Remove-NetFirewallRule
+if($Action -in @('block','allow')){$ruleAction=if($Action -eq 'block'){'Block'}else{'Allow'}; New-NetFirewallRule -DisplayName $names[0] -Direction Inbound -Action $ruleAction -Program $AppPath -Profile Any -Enabled True|Out-Null; New-NetFirewallRule -DisplayName $names[1] -Direction Outbound -Action $ruleAction -Program $AppPath -Profile Any -Enabled True|Out-Null}

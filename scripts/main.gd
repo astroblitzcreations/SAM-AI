@@ -504,6 +504,28 @@ var security_blocked_rules := 0
 var network_guard_button: Button
 var network_guard_header_button: Button
 var slow_inference_notice_shown := false
+var security_startup_tree: Tree
+var security_services_tree: Tree
+var security_rules_tree: Tree
+var security_context_menu: PopupMenu
+var security_processes: Array = []
+var security_connections: Array = []
+var security_startup_items: Array = []
+var security_services: Array = []
+var security_rules: Array = []
+var security_process_sort_column := 0
+var security_process_sort_ascending := true
+var security_connection_sort_column := 0
+var security_connection_sort_ascending := true
+var security_selected_rule := ""
+var security_seen_connections: Dictionary = {}
+var security_alert_baseline_ready := false
+var security_alert_queue: Array[Dictionary] = []
+var security_alert_dialog_open := false
+var security_refresh_due_ms := 0
+var security_verify_requested := false
+var security_lockdown_active := false
+var security_wfp_driver_state := "Not installed"
 
 func _ready() -> void:
 	# We stage shutdown ourselves so llama.cpp can release CUDA before Godot tears
@@ -2540,6 +2562,9 @@ func _process(delta: float) -> void:
 	poll_supervised_run_jobs()
 	poll_security_audit()
 	poll_security_snapshot()
+	if bool(settings.get("network_guard_enabled", false)) and Time.get_ticks_msec() >= security_refresh_due_ms:
+		security_refresh_due_ms = Time.get_ticks_msec() + 4000
+		refresh_security_snapshot()
 	if is_instance_valid(stats_report):
 		stats_refresh_elapsed += delta
 		if stats_refresh_elapsed >= 2.0 and $Page/Tabs.current_tab == $Page/Tabs.get_tab_idx_from_control(stats_report.get_parent() as Control):
@@ -11109,11 +11134,12 @@ func setup_security_center() -> void:
 	title.add_theme_color_override("font_color", colors.cyan)
 	header.add_child(title)
 	header.add_child(make_button("↻ REFRESH LIVE VIEW", refresh_security_snapshot, colors.green))
+	header.add_child(make_button("✓ VERIFY ALL SIGNATURES", func(): refresh_security_snapshot(true), colors.cyan))
 	header.add_child(make_button("🛡 RUN READ-ONLY AUDIT", run_security_audit, colors.green))
 	header.add_child(make_button("OPEN WINDOWS SECURITY", func(): OS.shell_open("windowsdefender:"), colors.cyan))
 	header.add_child(make_button("⧉ COPY REPORT", copy_security_report, colors.muted))
 	var guidance := Label.new()
-	guidance.text = "Live inspection is read-only. Blocking, unblocking, disabling a firewall profile, and ending a process always show the exact target and ask for confirmation. Unfamiliar does not automatically mean malicious."
+	guidance.text = "Connection alerts appear immediately after Windows reports a new listener or remote connection. Without a kernel driver SAM cannot pause the first packet; REMEMBER ALLOW or BLOCK creates future Windows Firewall rules. Unfamiliar does not automatically mean malicious."
 	guidance.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	guidance.add_theme_color_override("font_color", colors.amber)
 	page.add_child(guidance)
@@ -11125,6 +11151,8 @@ func setup_security_center() -> void:
 	guard_row.add_child(security_guard_label)
 	network_guard_button = make_button("ENABLE NETWORK GUARD", toggle_network_guard, colors.green)
 	guard_row.add_child(network_guard_button)
+	guard_row.add_child(make_button("⛔ STOP INTERNET (EMERGENCY)", request_emergency_lockdown, colors.red))
+	guard_row.add_child(make_button("RESTORE INTERNET", request_restore_network, colors.green))
 	guard_row.add_child(make_button("WINDOWS FIREWALL RULES", func(): OS.shell_open("wf.msc"), colors.cyan))
 	refresh_network_guard_ui()
 	var live_title := Label.new()
@@ -11138,6 +11166,8 @@ func setup_security_center() -> void:
 	for column in range(6):
 		security_connection_tree.set_column_title(column, ["APP", "PID", "STATE", "LOCAL", "REMOTE", "DIRECTION"][column])
 	security_connection_tree.hide_root = true
+	security_connection_tree.column_title_clicked.connect(sort_security_connections)
+	security_connection_tree.item_mouse_selected.connect(_on_security_connection_mouse_selected)
 	page.add_child(security_connection_tree)
 	var apps_title := Label.new()
 	apps_title.text = "RUNNING APPLICATIONS  //  SELECT AN APP FOR SAFE ACTIONS"
@@ -11151,6 +11181,9 @@ func setup_security_center() -> void:
 		security_process_tree.set_column_title(column, ["APP", "PID", "MEMORY", "PUBLISHER / RATING", "PATH"][column])
 	security_process_tree.hide_root = true
 	security_process_tree.item_selected.connect(select_security_process)
+	security_process_tree.item_activated.connect(show_selected_process_details)
+	security_process_tree.item_mouse_selected.connect(_on_security_process_mouse_selected)
+	security_process_tree.column_title_clicked.connect(sort_security_processes)
 	page.add_child(security_process_tree)
 	var app_actions := HBoxContainer.new()
 	page.add_child(app_actions)
@@ -11160,6 +11193,44 @@ func setup_security_center() -> void:
 	app_actions.add_child(make_button("UNBLOCK", func(): request_process_firewall_change(false), colors.green))
 	app_actions.add_child(make_button("END TASK", func(): request_end_selected_process(false), colors.amber))
 	app_actions.add_child(make_button("FORCE END", func(): request_end_selected_process(true), colors.red))
+	var persistence_title := Label.new()
+	persistence_title.text = "WINDOWS STARTUP APPS  //  COMMON PERSISTENCE LOCATIONS"
+	persistence_title.add_theme_color_override("font_color", colors.amber)
+	page.add_child(persistence_title)
+	security_startup_tree = Tree.new()
+	security_startup_tree.custom_minimum_size.y = 220
+	security_startup_tree.columns = 4
+	security_startup_tree.column_titles_visible = true
+	for column in range(4):
+		security_startup_tree.set_column_title(column, ["NAME", "COMMAND", "LOCATION", "USER"][column])
+	security_startup_tree.hide_root = true
+	page.add_child(security_startup_tree)
+	var services_title := Label.new()
+	services_title.text = "WINDOWS SERVICES  //  BACKGROUND + AUTO-START COMPONENTS"
+	services_title.add_theme_color_override("font_color", colors.amber)
+	page.add_child(services_title)
+	security_services_tree = Tree.new()
+	security_services_tree.custom_minimum_size.y = 260
+	security_services_tree.columns = 6
+	security_services_tree.column_titles_visible = true
+	for column in range(6):
+		security_services_tree.set_column_title(column, ["SERVICE", "DISPLAY NAME", "STATE", "START", "ACCOUNT", "PATH"][column])
+	security_services_tree.hide_root = true
+	page.add_child(security_services_tree)
+	var rules_title := Label.new()
+	rules_title.text = "FIREWALL RULES  //  RIGHT-CLICK SAM RULES TO ENABLE, DISABLE, OR REMOVE"
+	rules_title.add_theme_color_override("font_color", colors.cyan)
+	page.add_child(rules_title)
+	security_rules_tree = Tree.new()
+	security_rules_tree.custom_minimum_size.y = 300
+	security_rules_tree.columns = 7
+	security_rules_tree.column_titles_visible = true
+	for column in range(7):
+		security_rules_tree.set_column_title(column, ["RULE", "DIRECTION", "ACTION", "ENABLED", "PROFILE", "PROGRAM", "OWNER"][column])
+	security_rules_tree.hide_root = true
+	security_rules_tree.item_selected.connect(select_security_rule)
+	security_rules_tree.item_mouse_selected.connect(_on_security_rule_mouse_selected)
+	page.add_child(security_rules_tree)
 	security_report = RichTextLabel.new()
 	security_report.bbcode_enabled = true
 	security_report.selection_enabled = true
@@ -11173,14 +11244,16 @@ func setup_security_center() -> void:
 	footer.add_child(make_button("✦ ASK SAM TO EXPLAIN REPORT", ask_sam_about_security_report, colors.cyan))
 	footer.add_child(make_button("📂 OPEN REPORT FOLDER", open_security_report_folder, colors.muted))
 	apply_theme_recursive(page)
+	setup_security_context_menu()
 	refresh_security_snapshot.call_deferred()
 
 func refresh_network_guard_ui() -> void:
 	if not is_instance_valid(security_guard_label):
 		return
 	var enabled := bool(settings.get("network_guard_enabled", false))
-	security_guard_label.text = ("● ACTIVE • Windows Firewall monitored • %d SAM block rules" % security_blocked_rules) if enabled else "○ OFF • Windows Firewall remains under Windows control"
-	security_guard_label.add_theme_color_override("font_color", colors.green if enabled else colors.muted)
+	var guard_mode := "KERNEL INTERCEPT" if security_wfp_driver_state == "Running" else "STANDARD OBSERVER"
+	security_guard_label.text = ("⛔ EMERGENCY LOCKDOWN • INTERNET BLOCKED" if security_lockdown_active else ("● ACTIVE • %s • %d SAM rules" % [guard_mode, security_blocked_rules])) if enabled else "○ OFF • Windows Firewall remains under Windows control"
+	security_guard_label.add_theme_color_override("font_color", colors.red if security_lockdown_active else (colors.green if enabled else colors.muted))
 	if is_instance_valid(network_guard_button):
 		network_guard_button.text = "DISABLE NETWORK GUARD" if enabled else "ENABLE NETWORK GUARD"
 	refresh_network_guard_header()
@@ -11191,7 +11264,7 @@ func toggle_network_guard() -> void:
 	refresh_network_guard_ui()
 	show_toast("SAM Network Guard enabled • click its header badge any time" if bool(settings.network_guard_enabled) else "SAM Network Guard display disabled • Windows Firewall settings were not changed")
 
-func refresh_security_snapshot() -> void:
+func refresh_security_snapshot(verify_signatures := false) -> void:
 	if OS.get_name() != "Windows":
 		show_toast("The live security console currently supports Windows")
 		return
@@ -11199,7 +11272,12 @@ func refresh_security_snapshot() -> void:
 		return
 	var script := ProjectSettings.globalize_path("res://tools/sam_security_snapshot.ps1")
 	security_snapshot_output = ProjectSettings.globalize_path("user://security_snapshot.json")
-	security_snapshot_pid = OS.create_process("powershell.exe", PackedStringArray(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script, "-OutputPath", security_snapshot_output]), false)
+	security_verify_requested = verify_signatures
+	var args := PackedStringArray(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script, "-OutputPath", security_snapshot_output])
+	if verify_signatures:
+		args.append("-VerifySignatures")
+		show_toast("Verifying executable signatures • this deeper check can take a moment")
+	security_snapshot_pid = OS.create_process("powershell.exe", args, false)
 	if security_snapshot_pid <= 0:
 		show_toast("Could not start the local security inventory")
 
@@ -11213,9 +11291,22 @@ func poll_security_snapshot() -> void:
 	if not snapshot is Dictionary:
 		return
 	security_blocked_rules = int(snapshot.get("sam_block_rules", 0))
-	populate_security_processes(snapshot.get("processes", []))
-	populate_security_connections(snapshot.get("connections", []))
+	security_lockdown_active = bool(snapshot.get("lockdown", false))
+	security_wfp_driver_state = str(snapshot.get("wfp_driver_state", "Not installed"))
+	security_processes = snapshot.get("processes", [])
+	security_connections = snapshot.get("connections", [])
+	security_startup_items = snapshot.get("startup", [])
+	security_services = snapshot.get("services", [])
+	security_rules = snapshot.get("rules", [])
+	detect_new_security_connections(security_connections)
+	populate_security_processes(security_processes)
+	populate_security_connections(security_connections)
+	populate_security_startup(security_startup_items)
+	populate_security_services(security_services)
+	populate_security_rules(security_rules)
 	refresh_network_guard_ui()
+	if bool(snapshot.get("verified", false)):
+		show_toast("Publisher and Authenticode signature check complete")
 
 func populate_security_processes(processes: Array) -> void:
 	security_process_tree.clear()
@@ -11227,12 +11318,13 @@ func populate_security_processes(processes: Array) -> void:
 		var name := str(value.get("name", "Unknown"))
 		var path := str(value.get("path", ""))
 		var publisher := str(value.get("publisher", "Unverified"))
-		var rating := "SYSTEM" if path.to_lower().begins_with("c:\\windows\\") else ("SIGNED" if publisher != "Unverified" and not publisher.is_empty() else "REVIEW")
+		var signature := str(value.get("signature", "Not checked"))
+		var rating := "WINDOWS" if publisher.contains("Microsoft Windows") or path.to_lower().begins_with("c:\\windows\\") else ("SIGNED" if signature == "Valid" else ("KNOWN PUBLISHER" if publisher != "Unverified" and not publisher.is_empty() else "REVIEW"))
 		item.set_text(0, name)
-		item.set_text(1, str(value.get("pid", 0)))
+		item.set_text(1, str(int(value.get("pid", 0))))
 		item.set_text(2, "%.1f MB" % (float(value.get("memory", 0)) / 1048576.0))
-		item.set_text(3, "%s • %s" % [publisher, rating])
-		item.set_text(4, path)
+		item.set_text(3, "%s • %s • %s" % [publisher, signature, rating])
+		item.set_text(4, path if not path.is_empty() else "Protected or unavailable")
 		item.set_metadata(0, value)
 
 func populate_security_connections(connections: Array) -> void:
@@ -11243,7 +11335,232 @@ func populate_security_connections(connections: Array) -> void:
 			continue
 		var item := security_connection_tree.create_item(root)
 		for column in range(6):
-			item.set_text(column, str(value.get(["name", "pid", "state", "local", "remote", "direction"][column], "")))
+			item.set_text(column, str(int(value.get("pid", 0))) if column == 1 else str(value.get(["name", "pid", "state", "local", "remote", "direction"][column], "")))
+		item.set_metadata(0, value)
+
+func populate_security_startup(items: Array) -> void:
+	security_startup_tree.clear()
+	var root := security_startup_tree.create_item()
+	for value in items:
+		if value is Dictionary:
+			var item := security_startup_tree.create_item(root)
+			for column in range(4):
+				item.set_text(column, str(value.get(["name", "command", "location", "user"][column], "")))
+
+func populate_security_services(items: Array) -> void:
+	security_services_tree.clear()
+	var root := security_services_tree.create_item()
+	for value in items:
+		if value is Dictionary:
+			var item := security_services_tree.create_item(root)
+			for column in range(6):
+				item.set_text(column, str(value.get(["name", "display", "state", "start_mode", "account", "path"][column], "")))
+
+func populate_security_rules(items: Array) -> void:
+	security_rules_tree.clear()
+	var root := security_rules_tree.create_item()
+	for value in items:
+		if value is Dictionary:
+			var item := security_rules_tree.create_item(root)
+			for column in range(6):
+				item.set_text(column, str(value.get(["name", "direction", "action", "enabled", "profile", "program"][column], "")))
+			item.set_text(6, "SAM" if bool(value.get("sam_owned", false)) else "WINDOWS / APP")
+			item.set_metadata(0, value)
+
+func sort_security_processes(column: int, _button: int) -> void:
+	if security_process_sort_column == column:
+		security_process_sort_ascending = not security_process_sort_ascending
+	else:
+		security_process_sort_column = column
+		security_process_sort_ascending = true
+	var keys := ["name", "pid", "memory", "publisher", "path"]
+	var key: String = keys[column]
+	security_processes.sort_custom(func(a: Dictionary, b: Dictionary):
+		var left = a.get(key, "")
+		var right = b.get(key, "")
+		var less := float(left) < float(right) if key in ["pid", "memory"] else str(left).naturalnocasecmp_to(str(right)) < 0
+		return less if security_process_sort_ascending else not less)
+	populate_security_processes(security_processes)
+
+func sort_security_connections(column: int, _button: int) -> void:
+	if security_connection_sort_column == column:
+		security_connection_sort_ascending = not security_connection_sort_ascending
+	else:
+		security_connection_sort_column = column
+		security_connection_sort_ascending = true
+	var keys := ["name", "pid", "state", "local", "remote", "direction"]
+	var key: String = keys[column]
+	security_connections.sort_custom(func(a: Dictionary, b: Dictionary):
+		var less := float(a.get(key, 0)) < float(b.get(key, 0)) if key == "pid" else str(a.get(key, "")).naturalnocasecmp_to(str(b.get(key, ""))) < 0
+		return less if security_connection_sort_ascending else not less)
+	populate_security_connections(security_connections)
+
+func _on_security_process_mouse_selected(_position: Vector2, button: int) -> void:
+	select_security_process()
+	if button == MOUSE_BUTTON_RIGHT:
+		show_security_context_menu(true)
+
+func _on_security_connection_mouse_selected(_position: Vector2, button: int) -> void:
+	var item := security_connection_tree.get_selected()
+	if item != null and item.get_metadata(0) is Dictionary:
+		var value: Dictionary = item.get_metadata(0)
+		security_selected_pid = int(value.get("pid", -1))
+		security_selected_name = str(value.get("name", ""))
+		security_selected_path = str(value.get("path", ""))
+	if button == MOUSE_BUTTON_RIGHT:
+		show_security_context_menu(false)
+
+func setup_security_context_menu() -> void:
+	security_context_menu = PopupMenu.new()
+	security_context_menu.add_item("View details", 1)
+	security_context_menu.add_item("Ask SAM what it is", 2)
+	security_context_menu.add_item("Search online", 3)
+	security_context_menu.add_separator()
+	security_context_menu.add_item("Block network", 4)
+	security_context_menu.add_item("Unblock / remove SAM rules", 5)
+	security_context_menu.add_separator()
+	security_context_menu.add_item("Copy name + PID", 6)
+	security_context_menu.add_item("Copy executable path", 7)
+	security_context_menu.add_item("Open file location", 8)
+	security_context_menu.add_separator()
+	security_context_menu.add_item("End task", 9)
+	security_context_menu.add_item("Force end as administrator", 10)
+	security_context_menu.id_pressed.connect(handle_security_context_action)
+	add_child(security_context_menu)
+
+func show_security_context_menu(_from_process: bool) -> void:
+	if security_selected_pid < 0:
+		return
+	security_context_menu.position = DisplayServer.mouse_get_position()
+	security_context_menu.popup()
+
+func handle_security_context_action(id: int) -> void:
+	match id:
+		1: show_selected_process_details()
+		2: explain_selected_process()
+		3: search_selected_process()
+		4: request_process_firewall_change(true)
+		5: request_process_firewall_change(false)
+		6: DisplayServer.clipboard_set("%s • PID %d" % [security_selected_name, security_selected_pid]); show_toast("Process name and PID copied")
+		7: DisplayServer.clipboard_set(security_selected_path); show_toast("Executable path copied")
+		8:
+			if FileAccess.file_exists(security_selected_path): OS.shell_open(security_selected_path.get_base_dir())
+			else: show_toast("That executable path is protected or unavailable")
+		9: request_end_selected_process(false)
+		10: request_end_selected_process(true)
+
+func show_selected_process_details() -> void:
+	select_security_process()
+	if security_selected_pid < 0:
+		return
+	var details := AcceptDialog.new()
+	details.title = "%s • PID %d" % [security_selected_name, security_selected_pid]
+	details.dialog_text = "Executable: %s\n\nUse the buttons below or right-click the table for research, firewall, file-location, copy, and process controls." % (security_selected_path if not security_selected_path.is_empty() else "Protected or unavailable")
+	details.add_button("ASK SAM", true, "ask")
+	details.add_button("SEARCH ONLINE", true, "search")
+	details.add_button("OPEN LOCATION", true, "open")
+	details.custom_action.connect(func(action: StringName):
+		if action == &"ask": explain_selected_process()
+		elif action == &"search": search_selected_process()
+		elif action == &"open" and FileAccess.file_exists(security_selected_path): OS.shell_open(security_selected_path.get_base_dir()))
+	details.canceled.connect(details.queue_free)
+	details.confirmed.connect(details.queue_free)
+	add_child(details)
+	apply_theme_recursive(details)
+	details.popup_centered(Vector2i(760, 380))
+
+func select_security_rule() -> void:
+	var item := security_rules_tree.get_selected()
+	if item != null and item.get_metadata(0) is Dictionary:
+		security_selected_rule = str((item.get_metadata(0) as Dictionary).get("name", ""))
+
+func _on_security_rule_mouse_selected(_position: Vector2, button: int) -> void:
+	select_security_rule()
+	if button == MOUSE_BUTTON_RIGHT:
+		show_rule_context_menu()
+
+func show_rule_context_menu() -> void:
+	if security_selected_rule.is_empty(): return
+	var menu := PopupMenu.new()
+	menu.add_item("Copy rule", 1); menu.add_item("Enable SAM rule", 2); menu.add_item("Disable SAM rule", 3); menu.add_item("Remove SAM rule", 4)
+	menu.id_pressed.connect(func(id: int):
+		if id == 1: DisplayServer.clipboard_set(security_selected_rule); show_toast("Rule name copied")
+		elif id == 2: run_firewall_admin_action("rule_enable", "", "", security_selected_rule)
+		elif id == 3: run_firewall_admin_action("rule_disable", "", "", security_selected_rule)
+		elif id == 4: run_firewall_admin_action("rule_remove", "", "", security_selected_rule)
+		menu.queue_free())
+	menu.popup_hide.connect(menu.queue_free)
+	add_child(menu); menu.position = DisplayServer.mouse_get_position(); menu.popup()
+
+func detect_new_security_connections(items: Array) -> void:
+	var current: Dictionary = {}
+	for value in items:
+		if not value is Dictionary: continue
+		var remote := str(value.get("remote", ""))
+		var key := "%s|%s|%s|%s" % [value.get("pid", 0), value.get("state", ""), value.get("local", ""), remote]
+		current[key] = true
+		if security_alert_baseline_ready and not security_seen_connections.has(key) and is_external_security_connection(value) and security_alert_queue.size() < 8:
+			security_alert_queue.append(value)
+	security_seen_connections = current
+	if not security_alert_baseline_ready:
+		security_alert_baseline_ready = true
+	elif bool(settings.get("network_guard_enabled", false)):
+		show_next_security_alert()
+
+func is_external_security_connection(value: Dictionary) -> bool:
+	var remote := str(value.get("remote", ""))
+	var local := str(value.get("local", ""))
+	if str(value.get("state", "")) == "Listen":
+		return not local.begins_with("127.") and not local.begins_with("[::1]")
+	return not remote.begins_with("127.") and not remote.begins_with("[::1]") and not remote.begins_with("0.0.0.0")
+
+func show_next_security_alert() -> void:
+	if security_alert_dialog_open or security_alert_queue.is_empty() or not bool(settings.get("network_guard_enabled", false)):
+		return
+	var connection: Dictionary = security_alert_queue.pop_front()
+	security_alert_dialog_open = true
+	var dialog := AcceptDialog.new()
+	dialog.title = "SAM NETWORK GUARD • NEW NETWORK ACTIVITY"
+	var is_listener := str(connection.get("state", "")) == "Listen"
+	dialog.dialog_text = "%s\n\nApp: %s\nPID: %s\nDirection: %s\nLocal: %s\nRemote: %s\nExecutable: %s\n\nALLOW ONCE dismisses this alert. REMEMBER ALLOW or BLOCK creates inbound and outbound Windows Firewall rules and requests one-time administrator approval." % ["An app opened a non-loopback inbound listener." if is_listener else "An app connected to a remote address.", connection.get("name", "unknown"), connection.get("pid", 0), connection.get("direction", ""), connection.get("local", ""), connection.get("remote", ""), connection.get("path", "Unavailable")]
+	dialog.ok_button_text = "ALLOW ONCE"
+	dialog.add_button("REMEMBER ALLOW", true, "allow")
+	dialog.add_button("BLOCK APP", true, "block")
+	dialog.add_button("SEARCH", true, "search")
+	dialog.custom_action.connect(func(action: StringName):
+		var app_name := str(connection.get("name", "unknown"))
+		var app_path := str(connection.get("path", ""))
+		if action == &"allow" and FileAccess.file_exists(app_path): run_firewall_admin_action("allow", app_name, app_path)
+		elif action == &"block" and FileAccess.file_exists(app_path): run_firewall_admin_action("block", app_name, app_path)
+		elif action == &"search": open_web_url("https://www.google.com/search?q=" + app_name.uri_encode() + "+Windows+process", "Research the app behind this network activity")
+		dialog.hide())
+	dialog.visibility_changed.connect(func():
+		if not dialog.visible:
+			security_alert_dialog_open = false
+			dialog.queue_free()
+			show_next_security_alert.call_deferred())
+	add_child(dialog); apply_theme_recursive(dialog); style_security_dialog(dialog, colors.amber); dialog.popup_centered(Vector2i(820, 560))
+
+func request_emergency_lockdown() -> void:
+	if security_lockdown_active:
+		show_toast("Emergency lockdown is already active")
+		return
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "STOP INTERNET WITH EMERGENCY LOCKDOWN?"
+	dialog.dialog_text = "This creates two temporary SAM-owned Windows Firewall rules that block all inbound and outbound network traffic. Localhost AI remains available, but browsers, downloads, remote access, cloud sync, and online apps will disconnect.\n\nYour network adapters are NOT disabled. Use RESTORE INTERNET to remove only SAM's emergency rules. Windows UAC will ask for one-time approval."
+	dialog.ok_button_text = "STOP INTERNET NOW"
+	dialog.confirmed.connect(func(): run_firewall_admin_action("lockdown_on"); dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog); apply_theme_recursive(dialog); style_security_dialog(dialog, colors.red); dialog.popup_centered(Vector2i(780, 470))
+
+func request_restore_network() -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "RESTORE INTERNET?"
+	dialog.dialog_text = "Remove SAM Network Guard's emergency inbound/outbound block-all rules. App-specific rules and Windows-owned firewall rules are not changed."
+	dialog.ok_button_text = "RESTORE INTERNET"
+	dialog.confirmed.connect(func(): run_firewall_admin_action("lockdown_off"); dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog); apply_theme_recursive(dialog); style_security_dialog(dialog, colors.green); dialog.popup_centered(Vector2i(700, 360))
 
 func select_security_process() -> void:
 	var item := security_process_tree.get_selected()
@@ -11306,7 +11623,7 @@ func request_process_firewall_change(block: bool) -> void:
 	var selected_path := security_selected_path
 	var selected_name := security_selected_name
 	dialog.confirmed.connect(func():
-		run_firewall_action(selected_name, selected_path, block)
+		run_firewall_admin_action("block" if block else "unblock", selected_name, selected_path)
 		dialog.queue_free())
 	dialog.canceled.connect(dialog.queue_free)
 	add_child(dialog)
@@ -11314,15 +11631,16 @@ func request_process_firewall_change(block: bool) -> void:
 	style_security_dialog(dialog, colors.red if block else colors.green)
 	dialog.popup_centered(Vector2i(760, 390))
 
-func run_firewall_action(app_name: String, app_path: String, block: bool) -> void:
+func run_firewall_admin_action(action: String, app_name := "", app_path := "", rule_name := "") -> void:
 	var script := ProjectSettings.globalize_path("res://tools/sam_firewall_action.ps1")
-	var action := "block" if block else "unblock"
 	var safe_script := script.replace("'", "''")
 	var safe_name := app_name.replace("'", "''")
 	var safe_path := app_path.replace("'", "''")
-	var command := "Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','%s','-Action','%s','-AppName','%s','-AppPath','%s')" % [safe_script, action, safe_name, safe_path]
+	var safe_rule := rule_name.replace("'", "''")
+	var command := "Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','%s','-Action','%s','-AppName','%s','-AppPath','%s','-RuleName','%s')" % [safe_script, action, safe_name, safe_path, safe_rule]
 	OS.create_process("powershell.exe", PackedStringArray(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", command]), false)
 	show_toast("Windows administrator confirmation requested for " + action)
+	security_refresh_due_ms = Time.get_ticks_msec() + 2500
 
 func run_security_audit() -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
@@ -11514,7 +11832,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.1.0 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.0 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):

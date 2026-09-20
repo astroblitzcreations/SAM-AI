@@ -1,4 +1,16 @@
-# SAM-AI v1.1.0
+# SAM-AI v1.2.0
+
+## New in v1.2.0
+
+- ZoneAlarm-style Network Guard alerts for new external connections and non-loopback inbound listeners, with Allow Once, Remember Allow, Block App, and Search actions.
+- Reversible STOP INTERNET emergency lockdown uses two clearly named SAM firewall rules without disabling network adapters.
+- Sortable running-app and connection columns, double-click process details, and full right-click menus.
+- Process menus include Ask SAM, online research, block/unblock, copy name/PID/path, open file location, End Task, and administrator Force End.
+- A deep Verify All Signatures scan uses Windows Authenticode and improves publisher/rating information.
+- New Windows startup-app, service, and firewall-rule inventories expose common persistence locations.
+- Firewall rules show direction, action, state, profile, program when available, and owner. SAM-owned rules can be enabled, disabled, or removed from their context menu.
+
+Connection alerts are user-space observations shown immediately after Windows reports activity. SAM-AI does not install a kernel network driver and therefore cannot hold the first packet while waiting for a decision.
 
 ## New in v1.1.0
 
