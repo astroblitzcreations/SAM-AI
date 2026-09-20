@@ -380,6 +380,7 @@ var setup_model_path: LineEdit
 var setup_server_path: LineEdit
 var setup_checks: RichTextLabel
 var setup_check_poll_elapsed := 0.0
+var setup_last_required_state := ""
 var windows_runtime_request: HTTPRequest
 var windows_runtime_download_path := ""
 var startup_screen: Control
@@ -1799,6 +1800,13 @@ func server_directory_has_acceleration(server_path: String) -> bool:
 			return true
 	return found_cublas and found_cudart
 
+func running_in_windows_sandbox() -> bool:
+	return OS.get_name() == "Windows" and OS.get_environment("USERNAME").to_lower() == "wdagutilityaccount"
+
+func detected_gpu_name() -> String:
+	var name := RenderingServer.get_video_adapter_name().strip_edges()
+	return name if not name.is_empty() else "No GPU name reported by Windows"
+
 func model_size_gb_for_path(model_path: String) -> float:
 	if not FileAccess.file_exists(model_path):
 		return 0.0
@@ -1935,32 +1943,60 @@ func refresh_setup_checks(show_feedback: bool = false) -> void:
 	var memory := OS.get_memory_info()
 	var physical_gb := float(memory.get("physical", 0)) / 1073741824.0
 	var accelerated_runtime := server_directory_has_acceleration(setup_server_path.text.strip_edges())
-	var memory_ok := not model_ok or accelerated_runtime or physical_gb <= 0.0 or model_gb + 1.0 <= physical_gb
+	var memory_warning := model_ok and not accelerated_runtime and physical_gb > 0.0 and model_gb + 1.0 > physical_gb
+	var gpu_name := detected_gpu_name()
+	var sandbox := running_in_windows_sandbox()
 	var shard_ok := true
 	if model_path.to_lower().contains("-00001-of-00002.gguf"):
 		shard_ok = FileAccess.file_exists(model_path.replace("-00001-of-00002.gguf", "-00002-of-00002.gguf"))
 	var vision_configured := not str(settings.vision_model_path).is_empty() or not str(settings.vision_mmproj_path).is_empty()
 	var vision_ok := not vision_configured or (FileAccess.file_exists(str(settings.vision_model_path)) and FileAccess.file_exists(str(settings.vision_mmproj_path)))
 	setup_checks.clear()
+	setup_checks.append_text("[color=#4deeea][b]THIS COMPUTER[/b][/color]  %.1f GB physical RAM • %s\n" % [physical_gb, escape_bbcode(gpu_name)])
+	setup_checks.append_text("[color=#4deeea][b]ENGINE MODE[/b][/color]  %s\n" % ("GPU acceleration available" if accelerated_runtime else "Bundled CPU runtime • CUDA is optional"))
+	if sandbox:
+		setup_checks.append_text("[color=#f9c74f]WINDOWS SANDBOX:[/color] Windows can show the host GPU name while CUDA/VRAM passthrough remains unavailable. Test GPU acceleration on a normal Windows installation.\n\n")
+	else:
+		setup_checks.append_text("\n")
 	setup_checks.append_text("[color=%s]%s[/color]  GGUF language model\n" % ["#76f7a6" if model_ok else "#ff667d", "✓" if model_ok else "✕"])
 	setup_checks.append_text("[color=%s]%s[/color]  llama.cpp Windows engine\n" % ["#76f7a6" if server_ok else "#ff667d", "✓" if server_ok else "✕"])
-	setup_checks.append_text("[color=%s]%s[/color]  NVIDIA CUDA runtime beside engine\n" % ["#76f7a6" if cuda_ok else "#f9c74f", "✓" if cuda_ok else "!"])
+	setup_checks.append_text("[color=%s]%s[/color]  %s\n" % ["#76f7a6" if cuda_ok else "#8292ad", "✓" if cuda_ok else "○", "NVIDIA CUDA acceleration detected" if cuda_ok else "NVIDIA CUDA acceleration not installed (optional; CPU mode will be used)"])
 	setup_checks.append_text("[color=%s]%s[/color]  Microsoft Visual C++ runtime\n" % ["#76f7a6" if windows_runtime_ok else "#ff667d", "✓" if windows_runtime_ok else "✕"])
-	setup_checks.append_text("[color=%s]%s[/color]  Model fits this runtime + memory%s\n" % ["#76f7a6" if memory_ok else "#ff667d", "✓" if memory_ok else "✕", "" if memory_ok else " — %.2f GB model needs more than %.1f GB RAM on CPU; use the 3B model or a GPU runtime" % [model_gb, physical_gb]])
+	if memory_warning:
+		setup_checks.append_text("[color=#f9c74f]⚠ CPU MEMORY WARNING[/color]  %.2f GB model + working memory on %.1f GB physical RAM. SAM will let you start, but Windows may page to disk and replies can be extremely slow. Recommended: Qwen 3B, or install the matching CUDA runtime on a normal NVIDIA PC.\n" % [model_gb, physical_gb])
+	else:
+		setup_checks.append_text("[color=#76f7a6]✓[/color]  Model/runtime memory check has no obvious blocking issue\n")
 	setup_checks.append_text("[color=%s]%s[/color]  Kokoro + Whisper voice package (optional)" % ["#76f7a6" if voice_ok else "#f9c74f", "✓" if voice_ok else "!"])
 	setup_checks.append_text("\n[color=%s]%s[/color]  Split GGUF companion shards\n" % ["#76f7a6" if shard_ok else "#ff667d", "✓" if shard_ok else "✕"])
 	setup_checks.append_text("[color=%s]%s[/color]  Vision model + matching MMPROJ (optional)" % ["#76f7a6" if vision_ok else "#f9c74f", "✓" if vision_ok else "!"])
 	if show_feedback:
-		var all_required_ok := model_ok and server_ok and windows_runtime_ok and shard_ok and memory_ok
+		var all_required_ok := model_ok and server_ok and windows_runtime_ok and shard_ok
 		setup_checks.append_text("\n\n[center][color=%s][b]COMPONENT CHECK COMPLETE • %s[/b][/color][/center]" % ["#76f7a6" if all_required_ok else "#f9c74f", Time.get_time_string_from_system()])
 		show_toast("Component check complete • ready" if all_required_ok else "Component check complete • review warnings")
 		set_status("COMPONENT CHECK COMPLETE", colors.green if all_required_ok else colors.amber)
-	var setup_ready := model_ok and server_ok and windows_runtime_ok and shard_ok and memory_ok
+	var setup_ready := model_ok and server_ok and windows_runtime_ok and shard_ok
 	var complete_button: Button = $FirstRunSetup/Center/Panel/Margin/Content/Actions/Complete
 	complete_button.disabled = not setup_ready
-	complete_button.text = "READY — COMPLETE SETUP + START SAM" if setup_ready else "COMPLETE SETUP + START SAM"
-	$FirstRunSetup/Center/Panel/Margin/Content/Actions/WindowsRuntime.disabled = windows_runtime_ok
-	$FirstRunSetup/Center/Panel/Margin/Content/Actions/WindowsRuntime.text = "WINDOWS RUNTIME INSTALLED" if windows_runtime_ok else "GET WINDOWS RUNTIME"
+	complete_button.text = ("START ANYWAY — CPU MAY BE VERY SLOW" if memory_warning else "STEP 4 — START SAM") if setup_ready else "STEP 4 — COMPLETE REQUIRED ITEMS ABOVE"
+	apply_ready_action_style(complete_button, setup_ready, memory_warning)
+	var runtime_button: Button = $FirstRunSetup/Center/Panel/Margin/Content/Actions/WindowsRuntime
+	runtime_button.disabled = windows_runtime_ok
+	runtime_button.text = "✓ STEP 3 — WINDOWS RUNTIME INSTALLED" if windows_runtime_ok else "STEP 3 — INSTALL WINDOWS RUNTIME (REQUIRED)"
+	apply_missing_requirement_style(runtime_button, not windows_runtime_ok)
+	apply_missing_requirement_style($FirstRunSetup/Center/Panel/Margin/Content/ModelRow/BrowseModel, not model_ok)
+	apply_missing_requirement_style($FirstRunSetup/Center/Panel/Margin/Content/ServerRow/BrowseServer, not server_ok)
+	setup_last_required_state = "%s|%s|%s" % [model_ok, server_ok, windows_runtime_ok]
+
+func apply_ready_action_style(button: Button, ready: bool, warning: bool = false) -> void:
+	button.remove_theme_stylebox_override("normal")
+	if not ready:
+		return
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.24, 0.16, 0.025, 0.98) if warning else Color(0.035, 0.25, 0.17, 0.98)
+	style.border_color = colors.amber if warning else colors.green
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(7)
+	button.add_theme_stylebox_override("normal", style)
 
 func open_windows_runtime_download() -> void:
 	if is_instance_valid(windows_runtime_request):
@@ -2303,7 +2339,6 @@ func start_engine(context_reload: bool = false) -> void:
 	set_startup_progress(44.0, "STARTING LOCAL ENGINE", "Preparing llama.cpp and checking for stale processes")
 	recover_orphaned_server()
 	stop_engine(false)
-	stop_stale_llama_servers()
 	if not FileAccess.file_exists(str(settings.server_path)):
 		if recover_context_reload_failure("Server executable was not found"):
 			return
@@ -2326,13 +2361,9 @@ func start_engine(context_reload: bool = false) -> void:
 	var physical_gb := float(memory.get("physical", 0)) / 1073741824.0
 	var model_gb := model_size_gb_for_path(active_model)
 	if not accelerated_runtime and physical_gb > 0.0 and model_gb + 1.0 > physical_gb:
-		var fit_message := "The selected %.2f GB model cannot safely run with the CPU runtime in %.1f GB RAM. Choose the Qwen 3B starter model, or install a supported CUDA/Vulkan llama.cpp runtime." % [model_gb, physical_gb]
-		set_status("MODEL TOO LARGE FOR AVAILABLE RAM", colors.red)
-		set_startup_progress(0.0, "MODEL DOES NOT FIT", fit_message)
-		show_toast("Model is too large for this CPU-only setup • open Modules")
-		log_line("ERROR", fit_message)
-		show_first_run_setup()
-		return
+		var fit_message := "CPU memory warning: %.2f GB model plus working memory on %.1f GB physical RAM. Startup is allowed, but Windows paging may make loading and replies extremely slow." % [model_gb, physical_gb]
+		show_toast("Starting with limited RAM • expect slow CPU paging")
+		log_line("WARNING", fit_message)
 	var engine_log_path := ProjectSettings.globalize_path("user://llama_server.log")
 	if FileAccess.file_exists(engine_log_path):
 		DirAccess.remove_absolute(engine_log_path)
@@ -2400,16 +2431,6 @@ func recover_orphaned_server() -> void:
 		log_line("ENGINE", "Recovered and stopped orphan server PID %s" % old_pid)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(SERVER_PID_FILE))
 
-func stop_stale_llama_servers() -> void:
-	# SAM owns this dedicated llama-server executable. Clear every stale copy before
-	# binding the configured port so a health check can never hit an older model.
-	if OS.get_name() != "Windows" or str(settings.server_path).get_file().to_lower() != "llama-server.exe":
-		return
-	var output: Array = []
-	var exit_code := OS.execute("taskkill.exe", PackedStringArray(["/F", "/IM", "llama-server.exe"]), output, true, false)
-	if exit_code == 0:
-		log_line("ENGINE", "Stopped stale llama-server instances before launch")
-
 func setting_text(key: String) -> String:
 	if key in ["port", "gpu_layers", "context_size", "max_tokens"]:
 		return str(int(settings[key]))
@@ -2420,9 +2441,13 @@ func _process(delta: float) -> void:
 		setup_check_poll_elapsed += delta
 		if setup_check_poll_elapsed >= 1.0:
 			setup_check_poll_elapsed = 0.0
-			# The Microsoft installer runs in its own window. Re-check automatically
-			# so setup becomes ready without a hidden second manual check step.
-			refresh_setup_checks()
+			# Only repaint when a required file state actually changes. Rebuilding the
+			# RichTextLabel every second used to destroy text selections while users
+			# copied setup details for support.
+			var required_state := "%s|%s|%s" % [FileAccess.file_exists(setup_model_path.text.strip_edges()), FileAccess.file_exists(setup_server_path.text.strip_edges()), FileAccess.file_exists("C:/Windows/System32/vcruntime140.dll")]
+			if required_state != setup_last_required_state:
+				setup_last_required_state = required_state
+				refresh_setup_checks()
 	if privacy_activity_active and privacy_reset_at_msec > 0 and Time.get_ticks_msec() >= privacy_reset_at_msec:
 		set_privacy_activity(false)
 	poll_spellcheck(delta)
@@ -9051,26 +9076,19 @@ func refresh_system_specs() -> void:
 	var available_ram_gb := float(memory.get("available", memory.get("free", 0))) / 1073741824.0
 	if total_ram_gb > 0.0:
 		available_ram_gb = minf(available_ram_gb, total_ram_gb)
-	var gpu_name := RenderingServer.get_video_adapter_name()
+	var gpu_name := detected_gpu_name()
 	var gpu_api := RenderingServer.get_video_adapter_api_version()
 	var gpu_vram_mb := 0.0
 	var gpu_used_mb := 0.0
 	var gpu_temp := -1.0
 	var gpu_load := -1.0
-	var smi_output: Array = []
-	if OS.get_name() == "Windows":
-		var smi_args := PackedStringArray(["--query-gpu=name,memory.total,memory.used,temperature.gpu,utilization.gpu", "--format=csv,noheader,nounits"])
-		if OS.execute("nvidia-smi.exe", smi_args, smi_output, true, false) == 0 and not smi_output.is_empty():
-			var values := str(smi_output[0]).strip_edges().split(",")
-			if values.size() >= 5:
-				gpu_name = values[0].strip_edges()
-				gpu_vram_mb = float(values[1].strip_edges())
-				gpu_used_mb = float(values[2].strip_edges())
-				gpu_temp = float(values[3].strip_edges())
-				gpu_load = float(values[4].strip_edges())
 	var model_gb := get_selected_model_size_gb()
 	var verdict := "GPU memory could not be measured; SAM will test CUDA during engine startup."
 	var verdict_color := "#f9c74f"
+	if running_in_windows_sandbox():
+		verdict = "Windows Sandbox may display the host GPU name without exposing CUDA or VRAM to apps. The bundled CPU runtime is the reliable Sandbox path; validate CUDA performance on a normal Windows installation."
+	elif not server_directory_has_acceleration(str(settings.server_path)):
+		verdict = "The bundled CPU runtime is selected. This works without CUDA, but larger models can be slow. Install an official CUDA/Vulkan llama.cpp runtime from Modules for compatible GPU acceleration."
 	if gpu_vram_mb > 0.0:
 		var vram_gb := gpu_vram_mb / 1024.0
 		var estimated_need := model_gb + maxf(1.0, float(settings.context_size) / 8192.0 * 1.6)
