@@ -1,4 +1,14 @@
-# SAM-AI v1.0.5
+# SAM-AI v1.1.0
+
+## New in v1.1.0
+
+- SAM Network Guard adds a live, local view of running applications, TCP listeners, and active connections.
+- Selected apps can be explained by SAM, researched in a browser, blocked/unblocked through named Windows Firewall rules, or ended after explicit confirmation.
+- A compact header badge shows Network Guard state and SAM-managed block-rule count when the feature is enabled.
+- Modules now includes a clearly warned factory reset that removes only SAM-AI private app data and returns to first-run setup; downloaded models and runtimes are preserved.
+- The project-session handle is now a compact `<` / `>` control instead of a tall blank strip.
+- Long views expose visible scrollbars so hidden content is discoverable.
+- Slow CPU inference gets a ten-minute first-token allowance and a progress notice instead of failing after 90 seconds while the model is still working.
 
 SAM-AI is a private, local and offline desktop AI interface created by Steadyforge
 of Astroblitz Creations and Makazhan.

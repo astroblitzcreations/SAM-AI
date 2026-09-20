@@ -37,7 +37,8 @@ const CONTEXT_GROWTH_STEP := 2048
 const CONTEXT_MAX_RELOADS := 3
 const CONTEXT_MAX_OVERFLOW_RETRIES := 6
 const ENGINE_READY_TIMEOUT_MS := 180000
-const FIRST_TOKEN_TIMEOUT_MS := 90000
+const GPU_FIRST_TOKEN_TIMEOUT_MS := 180000
+const CPU_FIRST_TOKEN_TIMEOUT_MS := 600000
 const HOST := "127.0.0.1"
 const ESP_BRIDGE_HOST := "127.0.0.1"
 const ESP_BRIDGE_PORT := 8765
@@ -110,7 +111,8 @@ var settings := {
 	"video_generation_engine": "Wan 2.2 TI2V-5B",
 	"visual_module_preference": "auto",
 	"ai_visual_planning_enabled": true,
-	"generation_fallback_enabled": true
+	"generation_fallback_enabled": true,
+	"network_guard_enabled": false
 }
 var history: Array = []
 var server_pid := -1
@@ -490,6 +492,18 @@ const STUDY_ARCHIVE_CONFIRM_MS := 6500
 var security_report: RichTextLabel
 var security_audit_pid := -1
 var security_audit_output := ""
+var security_snapshot_pid := -1
+var security_snapshot_output := ""
+var security_process_tree: Tree
+var security_connection_tree: Tree
+var security_guard_label: Label
+var security_selected_pid := -1
+var security_selected_name := ""
+var security_selected_path := ""
+var security_blocked_rules := 0
+var network_guard_button: Button
+var network_guard_header_button: Button
+var slow_inference_notice_shown := false
 
 func _ready() -> void:
 	# We stage shutdown ourselves so llama.cpp can release CUDA before Godot tears
@@ -676,6 +690,7 @@ func bind_editor_ui() -> void:
 	setup_voice_system()
 	setup_knowledge_vault()
 	setup_about_tab()
+	configure_all_tab_scrolling()
 	load_background()
 	input_box.placeholder_text = "Type your message to Sam here…  Enter sends • Shift+Enter adds a new line • ↑/↓ recalls"
 	input_box.editable = true
@@ -683,6 +698,20 @@ func bind_editor_ui() -> void:
 	input_box.caret_blink_interval = 0.53
 	input_box.add_theme_color_override("caret_color", colors.cyan)
 	refresh_system_specs()
+
+func configure_all_tab_scrolling() -> void:
+	# Every long-form view either owns a ScrollContainer or a text/tree control
+	# with a native scrollbar. Force scrollbars visible so new users can tell that
+	# more content exists instead of assuming it was cut off.
+	var pending: Array[Node] = [$Page/Tabs]
+	while not pending.is_empty():
+		var node: Node = pending.pop_back()
+		for child in node.get_children():
+			pending.append(child)
+		if node is ScrollContainer:
+			(node as ScrollContainer).vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
+		elif node is RichTextLabel:
+			(node as RichTextLabel).scroll_active = true
 
 func setup_modules_tab() -> void:
 	var tabs: TabContainer = $Page/Tabs
@@ -711,6 +740,9 @@ func setup_modules_tab() -> void:
 	setup_button.text = "✓ RUN MODULE SETUP CHECK"
 	setup_button.tooltip_text = "Check the selected GGUF, llama-server, Windows runtime, CUDA files, model shards, vision projector, and optional voice modules"
 	setup_button.reparent(top_actions)
+	var reset_button := make_button("↻ FACTORY RESET SAM-AI", request_factory_reset, colors.red)
+	reset_button.tooltip_text = "Erase SAM-AI settings, chats, sessions, logs, and local app data, then restart at first-time setup. Downloaded models are not deleted."
+	top_actions.add_child(reset_button)
 	module_requirement_banner = Label.new()
 	module_requirement_banner.name = "ModuleRequirementsBanner"
 	module_requirement_banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -719,6 +751,7 @@ func setup_modules_tab() -> void:
 	module_scroll = ScrollContainer.new()
 	module_scroll.name = "ModuleScroll"
 	module_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	module_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
 	module_tab.add_child(module_scroll)
 	var content := VBoxContainer.new()
 	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -832,6 +865,57 @@ func setup_modules_tab() -> void:
 	projector_row.add_child(make_button("DOWNLOAD MMPROJ", func(): open_module_download(projector_url.text), colors.cyan))
 	projector_row.add_child(make_button("LOAD MMPROJ", func(): browse_path("vision_mmproj_path"), colors.green))
 	add_tab_help_button(module_actions, "Modules", "Explain primary GGUF models, vision GGUF and MMPROJ pairs, llama-server, GPU layers, context size, model sizes, and how to choose a suitable local model for this computer.")
+
+func request_factory_reset() -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "RESET SAM-AI TO A FRESH INSTALL?"
+	dialog.dialog_text = "This removes SAM-AI's saved settings, chats, project sessions, KnowledgeVault database, logs, and cached state from its private app-data folder.\n\nIt does NOT delete GGUF models, llama.cpp, voice modules, generated projects, or other files outside SAM-AI's private app-data folder.\n\nSAM-AI will close, restart, and show the first-time setup again. This cannot be undone."
+	dialog.ok_button_text = "RESET EVERYTHING + RESTART"
+	dialog.confirmed.connect(func():
+		dialog.queue_free()
+		perform_factory_reset())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	style_security_dialog(dialog, colors.red)
+	dialog.popup_centered(Vector2i(760, 470))
+
+func perform_factory_reset() -> void:
+	stop_generation()
+	stop_voice_daemon()
+	stop_engine()
+	var private_root := ProjectSettings.globalize_path("user://").simplify_path().replace("\\", "/").trim_suffix("/")
+	if private_root.is_empty() or private_root.length() < 8:
+		show_toast("Reset stopped because the private app-data path could not be verified")
+		return
+	var reset_targets := [
+		"settings.json", "last_session.json", "first_run_complete.json", "llama_server.pid",
+		"tts_daemon.pid", "sessions", "knowledge_vault", "logs", "cache", "temp"
+	]
+	for relative_path in reset_targets:
+		var target := private_root.path_join(relative_path).simplify_path().replace("\\", "/")
+		if target == private_root or not target.begins_with(private_root + "/"):
+			continue
+		if DirAccess.dir_exists_absolute(target):
+			remove_directory_tree(target)
+		elif FileAccess.file_exists(target):
+			DirAccess.remove_absolute(target)
+	var executable := OS.get_executable_path()
+	if OS.has_feature("editor"):
+		OS.create_process(executable, PackedStringArray(["--path", ProjectSettings.globalize_path("res://")]), false)
+	else:
+		OS.create_process(executable, PackedStringArray(), false)
+	get_tree().quit()
+
+func remove_directory_tree(path: String) -> void:
+	var directory := DirAccess.open(path)
+	if directory == null:
+		return
+	for filename in directory.get_files():
+		DirAccess.remove_absolute(path.path_join(filename))
+	for child in directory.get_directories():
+		remove_directory_tree(path.path_join(child))
+	DirAccess.remove_absolute(path)
 
 func add_visual_generation_engine_controls(parent: VBoxContainer) -> void:
 	var heading := Label.new()
@@ -2455,6 +2539,7 @@ func _process(delta: float) -> void:
 	poll_command_center_jobs()
 	poll_supervised_run_jobs()
 	poll_security_audit()
+	poll_security_snapshot()
 	if is_instance_valid(stats_report):
 		stats_refresh_elapsed += delta
 		if stats_refresh_elapsed >= 2.0 and $Page/Tabs.current_tab == $Page/Tabs.get_tab_idx_from_control(stats_report.get_parent() as Control):
@@ -3345,6 +3430,7 @@ func context_request_is_current(serial: int) -> bool:
 
 func reset_context_for_new_request() -> void:
 	context_request_serial += 1
+	slow_inference_notice_shown = false
 	stream_finished = false
 	response_text = ""
 	render_buffer = ""
@@ -5039,9 +5125,19 @@ func poll_stream() -> void:
 	if stream_retry_not_before_ms > 0:
 		stream_retry_not_before_ms = 0
 		stream_client.connect_to_host(HOST, int(settings.port))
-	if bool(get_meta("request_sent", false)) and response_text.is_empty() and stream_request_sent_ms > 0 and Time.get_ticks_msec() - stream_request_sent_ms > FIRST_TOKEN_TIMEOUT_MS:
-		fail_generation("The local model produced no reply within 90 seconds. The model may be too large for this computer, or the selected runtime may not match its GPU. Try the bundled CPU runtime with the 3B starter model, or install the matching CUDA runtime in Modules." + engine_log_failure_suffix())
-		return
+	if bool(get_meta("request_sent", false)) and response_text.is_empty() and stream_request_sent_ms > 0:
+		var first_token_elapsed := Time.get_ticks_msec() - stream_request_sent_ms
+		var accelerated := server_directory_has_acceleration(str(settings.server_path)) and int(settings.gpu_layers) > 0
+		var first_token_limit := GPU_FIRST_TOKEN_TIMEOUT_MS if accelerated else CPU_FIRST_TOKEN_TIMEOUT_MS
+		if first_token_elapsed > 45000 and not slow_inference_notice_shown:
+			slow_inference_notice_shown = true
+			var mode_text := "GPU" if accelerated else "CPU / PAGED MEMORY"
+			set_status("MODEL WORKING • %s • %ds" % [mode_text, first_token_elapsed / 1000], colors.amber)
+			show_toast("The engine is still responding • large CPU models can take several minutes for the first token")
+			log_line("INFERENCE", "Waiting for first token in %s mode; watchdog extended to %d seconds" % [mode_text, first_token_limit / 1000])
+		if first_token_elapsed > first_token_limit:
+			fail_generation("The local model produced no first token within %d minutes. The engine remained open, but this model/runtime combination is too slow or stalled. Try the bundled 3B starter model, lower the context size, or install the matching CUDA runtime in Modules." % maxi(1, first_token_limit / 60000) + engine_log_failure_suffix())
+			return
 	var err := stream_client.poll()
 	if err != OK:
 		if stream_response_code >= 400:
@@ -10992,30 +11088,82 @@ func normalize_retrieval_text(value: String) -> String:
 
 func setup_security_center() -> void:
 	var tabs: TabContainer = $Page/Tabs
+	var outer := VBoxContainer.new()
+	outer.name = "Security Center"
+	tabs.add_child(outer)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
+	outer.add_child(scroll)
 	var page := VBoxContainer.new()
 	page.name = "Security Center"
+	page.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	page.add_theme_constant_override("separation", 10)
-	tabs.add_child(page)
+	scroll.add_child(page)
 	var header := HBoxContainer.new()
 	page.add_child(header)
 	var title := Label.new()
-	title.text = "SECURITY CENTER  //  OBSERVE • VERIFY • ACT WITH APPROVAL"
+	title.text = "SAM NETWORK GUARD  //  FIREWALL • CONNECTIONS • RUNNING APPS"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.add_theme_font_size_override("font_size", 21)
 	title.add_theme_color_override("font_color", colors.cyan)
 	header.add_child(title)
+	header.add_child(make_button("↻ REFRESH LIVE VIEW", refresh_security_snapshot, colors.green))
 	header.add_child(make_button("🛡 RUN READ-ONLY AUDIT", run_security_audit, colors.green))
 	header.add_child(make_button("OPEN WINDOWS SECURITY", func(): OS.shell_open("windowsdefender:"), colors.cyan))
 	header.add_child(make_button("⧉ COPY REPORT", copy_security_report, colors.muted))
 	var guidance := Label.new()
-	guidance.text = "This audit reads local Windows status only. It does not use the internet, block addresses, change firewall rules, disable tasks, quarantine files, or delete anything. Unfamiliar does not automatically mean malicious."
+	guidance.text = "Live inspection is read-only. Blocking, unblocking, disabling a firewall profile, and ending a process always show the exact target and ask for confirmation. Unfamiliar does not automatically mean malicious."
 	guidance.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	guidance.add_theme_color_override("font_color", colors.amber)
 	page.add_child(guidance)
+	var guard_row := HBoxContainer.new()
+	page.add_child(guard_row)
+	security_guard_label = Label.new()
+	security_guard_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	security_guard_label.add_theme_font_size_override("font_size", 18)
+	guard_row.add_child(security_guard_label)
+	network_guard_button = make_button("ENABLE NETWORK GUARD", toggle_network_guard, colors.green)
+	guard_row.add_child(network_guard_button)
+	guard_row.add_child(make_button("WINDOWS FIREWALL RULES", func(): OS.shell_open("wf.msc"), colors.cyan))
+	refresh_network_guard_ui()
+	var live_title := Label.new()
+	live_title.text = "LIVE TCP CONNECTIONS + LISTENERS"
+	live_title.add_theme_color_override("font_color", colors.cyan)
+	page.add_child(live_title)
+	security_connection_tree = Tree.new()
+	security_connection_tree.custom_minimum_size.y = 230
+	security_connection_tree.columns = 6
+	security_connection_tree.column_titles_visible = true
+	for column in range(6):
+		security_connection_tree.set_column_title(column, ["APP", "PID", "STATE", "LOCAL", "REMOTE", "DIRECTION"][column])
+	security_connection_tree.hide_root = true
+	page.add_child(security_connection_tree)
+	var apps_title := Label.new()
+	apps_title.text = "RUNNING APPLICATIONS  //  SELECT AN APP FOR SAFE ACTIONS"
+	apps_title.add_theme_color_override("font_color", colors.green)
+	page.add_child(apps_title)
+	security_process_tree = Tree.new()
+	security_process_tree.custom_minimum_size.y = 280
+	security_process_tree.columns = 5
+	security_process_tree.column_titles_visible = true
+	for column in range(5):
+		security_process_tree.set_column_title(column, ["APP", "PID", "MEMORY", "PUBLISHER / RATING", "PATH"][column])
+	security_process_tree.hide_root = true
+	security_process_tree.item_selected.connect(select_security_process)
+	page.add_child(security_process_tree)
+	var app_actions := HBoxContainer.new()
+	page.add_child(app_actions)
+	app_actions.add_child(make_button("✦ ASK SAM WHAT IT IS", explain_selected_process, colors.cyan))
+	app_actions.add_child(make_button("🌐 SEARCH ONLINE", search_selected_process, colors.cyan))
+	app_actions.add_child(make_button("BLOCK NETWORK", func(): request_process_firewall_change(true), colors.amber))
+	app_actions.add_child(make_button("UNBLOCK", func(): request_process_firewall_change(false), colors.green))
+	app_actions.add_child(make_button("END TASK", func(): request_end_selected_process(false), colors.amber))
+	app_actions.add_child(make_button("FORCE END", func(): request_end_selected_process(true), colors.red))
 	security_report = RichTextLabel.new()
 	security_report.bbcode_enabled = true
 	security_report.selection_enabled = true
-	security_report.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	security_report.custom_minimum_size.y = 300
 	security_report.append_text("[font_size=20][color=#76f7a6]READY FOR A LOCAL SECURITY AUDIT[/color][/font_size]\n\n")
 	security_report.append_text("The report checks Defender, firewall profiles, listening ports, established connections, startup programs, non-Microsoft scheduled tasks, recent failed Windows sign-ins, and installed hotfixes.\n\n")
 	security_report.append_text("[color=#8292ad]Workspace Tools must be enabled. Administrative access is not used; sections Windows protects may be reported as unavailable.[/color]")
@@ -11025,6 +11173,156 @@ func setup_security_center() -> void:
 	footer.add_child(make_button("✦ ASK SAM TO EXPLAIN REPORT", ask_sam_about_security_report, colors.cyan))
 	footer.add_child(make_button("📂 OPEN REPORT FOLDER", open_security_report_folder, colors.muted))
 	apply_theme_recursive(page)
+	refresh_security_snapshot.call_deferred()
+
+func refresh_network_guard_ui() -> void:
+	if not is_instance_valid(security_guard_label):
+		return
+	var enabled := bool(settings.get("network_guard_enabled", false))
+	security_guard_label.text = ("● ACTIVE • Windows Firewall monitored • %d SAM block rules" % security_blocked_rules) if enabled else "○ OFF • Windows Firewall remains under Windows control"
+	security_guard_label.add_theme_color_override("font_color", colors.green if enabled else colors.muted)
+	if is_instance_valid(network_guard_button):
+		network_guard_button.text = "DISABLE NETWORK GUARD" if enabled else "ENABLE NETWORK GUARD"
+	refresh_network_guard_header()
+
+func toggle_network_guard() -> void:
+	settings.network_guard_enabled = not bool(settings.get("network_guard_enabled", false))
+	save_json(SETTINGS_FILE, settings)
+	refresh_network_guard_ui()
+	show_toast("SAM Network Guard enabled • click its header badge any time" if bool(settings.network_guard_enabled) else "SAM Network Guard display disabled • Windows Firewall settings were not changed")
+
+func refresh_security_snapshot() -> void:
+	if OS.get_name() != "Windows":
+		show_toast("The live security console currently supports Windows")
+		return
+	if security_snapshot_pid > 0 and OS.is_process_running(security_snapshot_pid):
+		return
+	var script := ProjectSettings.globalize_path("res://tools/sam_security_snapshot.ps1")
+	security_snapshot_output = ProjectSettings.globalize_path("user://security_snapshot.json")
+	security_snapshot_pid = OS.create_process("powershell.exe", PackedStringArray(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script, "-OutputPath", security_snapshot_output]), false)
+	if security_snapshot_pid <= 0:
+		show_toast("Could not start the local security inventory")
+
+func poll_security_snapshot() -> void:
+	if security_snapshot_pid <= 0 or OS.is_process_running(security_snapshot_pid):
+		return
+	security_snapshot_pid = -1
+	if not FileAccess.file_exists(security_snapshot_output):
+		return
+	var snapshot = JSON.parse_string(FileAccess.get_file_as_string(security_snapshot_output))
+	if not snapshot is Dictionary:
+		return
+	security_blocked_rules = int(snapshot.get("sam_block_rules", 0))
+	populate_security_processes(snapshot.get("processes", []))
+	populate_security_connections(snapshot.get("connections", []))
+	refresh_network_guard_ui()
+
+func populate_security_processes(processes: Array) -> void:
+	security_process_tree.clear()
+	var root := security_process_tree.create_item()
+	for value in processes:
+		if not value is Dictionary:
+			continue
+		var item := security_process_tree.create_item(root)
+		var name := str(value.get("name", "Unknown"))
+		var path := str(value.get("path", ""))
+		var publisher := str(value.get("publisher", "Unverified"))
+		var rating := "SYSTEM" if path.to_lower().begins_with("c:\\windows\\") else ("SIGNED" if publisher != "Unverified" and not publisher.is_empty() else "REVIEW")
+		item.set_text(0, name)
+		item.set_text(1, str(value.get("pid", 0)))
+		item.set_text(2, "%.1f MB" % (float(value.get("memory", 0)) / 1048576.0))
+		item.set_text(3, "%s • %s" % [publisher, rating])
+		item.set_text(4, path)
+		item.set_metadata(0, value)
+
+func populate_security_connections(connections: Array) -> void:
+	security_connection_tree.clear()
+	var root := security_connection_tree.create_item()
+	for value in connections:
+		if not value is Dictionary:
+			continue
+		var item := security_connection_tree.create_item(root)
+		for column in range(6):
+			item.set_text(column, str(value.get(["name", "pid", "state", "local", "remote", "direction"][column], "")))
+
+func select_security_process() -> void:
+	var item := security_process_tree.get_selected()
+	if item == null:
+		return
+	var value = item.get_metadata(0)
+	if value is Dictionary:
+		security_selected_pid = int(value.get("pid", -1))
+		security_selected_name = str(value.get("name", ""))
+		security_selected_path = str(value.get("path", ""))
+
+func explain_selected_process() -> void:
+	if security_selected_pid <= 0:
+		show_toast("Select a running application first")
+		return
+	$Page/Tabs.current_tab = 0
+	input_box.text = "Explain this Windows process cautiously: %s (PID %d), file path: %s. Describe what it normally does, whether the location looks expected, what can be verified locally, and rate it as Known Windows / Known signed app / Needs review / Suspicious evidence. Do not call an app malicious merely because it is unfamiliar." % [security_selected_name, security_selected_pid, security_selected_path]
+	input_box.grab_focus()
+	show_toast("Process details placed in chat • transmit when ready")
+
+func search_selected_process() -> void:
+	if security_selected_name.is_empty():
+		show_toast("Select a running application first")
+		return
+	var query := security_selected_name.uri_encode()
+	open_web_url("https://www.google.com/search?q=" + query + "+Windows+process", "Search the web for public information about the selected process")
+
+func request_end_selected_process(force: bool) -> void:
+	if security_selected_pid <= 4:
+		show_toast("Protected system processes cannot be ended here")
+		return
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "FORCE END PROCESS?" if force else "END PROCESS?"
+	dialog.dialog_text = "%s PID %d\n%s\n\nUnsaved work in this application may be lost. Force End does not give the app time to close cleanly and requests one-time Windows administrator approval." % [security_selected_name, security_selected_pid, security_selected_path]
+	dialog.ok_button_text = "FORCE END PID %d" % security_selected_pid if force else "END PID %d" % security_selected_pid
+	var selected_pid := security_selected_pid
+	dialog.confirmed.connect(func():
+		if force:
+			var command := "Start-Process -FilePath 'taskkill.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('/PID','%d','/T','/F')" % selected_pid
+			OS.create_process("powershell.exe", PackedStringArray(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", command]), false)
+		else:
+			OS.create_process("taskkill.exe", PackedStringArray(["/PID", str(selected_pid), "/T"]), false)
+		dialog.queue_free()
+		await get_tree().create_timer(0.8).timeout
+		refresh_security_snapshot())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	style_security_dialog(dialog, colors.red if force else colors.amber)
+	dialog.popup_centered(Vector2i(700, 360))
+
+func request_process_firewall_change(block: bool) -> void:
+	if security_selected_path.is_empty() or not FileAccess.file_exists(security_selected_path):
+		show_toast("Select an application with a readable executable path")
+		return
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "BLOCK THIS APP'S NETWORK?" if block else "REMOVE SAM BLOCK RULES?"
+	dialog.dialog_text = "%s\n%s\n\nThis changes Windows Firewall and will request Windows administrator approval for this one action." % [security_selected_name, security_selected_path]
+	dialog.ok_button_text = "BLOCK IN + OUT" if block else "UNBLOCK APP"
+	var selected_path := security_selected_path
+	var selected_name := security_selected_name
+	dialog.confirmed.connect(func():
+		run_firewall_action(selected_name, selected_path, block)
+		dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	style_security_dialog(dialog, colors.red if block else colors.green)
+	dialog.popup_centered(Vector2i(760, 390))
+
+func run_firewall_action(app_name: String, app_path: String, block: bool) -> void:
+	var script := ProjectSettings.globalize_path("res://tools/sam_firewall_action.ps1")
+	var action := "block" if block else "unblock"
+	var safe_script := script.replace("'", "''")
+	var safe_name := app_name.replace("'", "''")
+	var safe_path := app_path.replace("'", "''")
+	var command := "Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','%s','-Action','%s','-AppName','%s','-AppPath','%s')" % [safe_script, action, safe_name, safe_path]
+	OS.create_process("powershell.exe", PackedStringArray(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", command]), false)
+	show_toast("Windows administrator confirmation requested for " + action)
 
 func run_security_audit() -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
@@ -11216,7 +11514,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.0.2 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.1.0 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
@@ -11307,7 +11605,7 @@ func setup_session_sidebar() -> void:
 	column.add_theme_constant_override("separation", 9)
 	margin.add_child(column)
 	var title := Label.new()
-	title.text = "SESSIONS  ◀"
+	title.text = "PROJECT SESSIONS"
 	title.add_theme_font_size_override("font_size", 19)
 	title.add_theme_color_override("font_color", colors.cyan)
 	column.add_child(title)
@@ -11359,15 +11657,16 @@ func setup_session_sidebar() -> void:
 	session_resize_grip.mouse_exited.connect(schedule_session_sidebar_auto_hide)
 	add_child(session_resize_grip)
 	session_edge_button = Button.new()
-	session_edge_button.text = "▶"
+	session_edge_button.text = "<"
 	session_edge_button.tooltip_text = "Open or close project sessions"
 	session_edge_button.set_anchors_preset(Control.PRESET_CENTER_LEFT)
 	session_edge_button.offset_left = 3.0
-	session_edge_button.offset_right = 19.0
-	session_edge_button.offset_top = -76.0
-	session_edge_button.offset_bottom = 76.0
-	session_edge_button.clip_text = true
-	session_edge_button.add_theme_font_size_override("font_size", 12)
+	session_edge_button.offset_right = 35.0
+	session_edge_button.offset_top = -28.0
+	session_edge_button.offset_bottom = 28.0
+	session_edge_button.custom_minimum_size = Vector2(32, 56)
+	session_edge_button.clip_text = false
+	session_edge_button.add_theme_font_size_override("font_size", 24)
 	session_edge_button.z_index = 81
 	session_edge_button.pressed.connect(func(): set_session_sidebar_open(not session_sidebar_open))
 	session_edge_button.mouse_entered.connect(cancel_session_sidebar_auto_hide)
@@ -11404,7 +11703,8 @@ func set_session_sidebar_open(open: bool) -> void:
 	if open:
 		session_resize_grip.offset_left = session_sidebar_width - 4.0
 		session_resize_grip.offset_right = session_sidebar_width + 4.0
-	session_edge_button.text = "◀" if open else "▶"
+	# The arrow shows the panel's current position: right/open or left/closed.
+	session_edge_button.text = ">" if open else "<"
 	restore_session_chat_scroll.call_deferred()
 
 func cancel_session_sidebar_auto_hide() -> void:
@@ -11919,6 +12219,12 @@ func setup_privacy_indicator() -> void:
 	pc_commands_button.add_theme_font_size_override("font_size", 13)
 	pc_commands_button.get_popup().id_pressed.connect(_on_pc_commands_menu)
 	privacy_row.add_child(pc_commands_button)
+	network_guard_header_button = Button.new()
+	network_guard_header_button.flat = true
+	network_guard_header_button.add_theme_font_size_override("font_size", 13)
+	network_guard_header_button.tooltip_text = "Open SAM Network Guard"
+	network_guard_header_button.pressed.connect(open_network_guard_tab)
+	privacy_row.add_child(network_guard_header_button)
 	knowledge_discovery_button = Button.new()
 	knowledge_discovery_button.flat = true
 	knowledge_discovery_button.text = "✦ DISCOVERIES"
@@ -11934,8 +12240,23 @@ func setup_privacy_indicator() -> void:
 	privacy_row.add_child(microphone_privacy_button)
 	set_privacy_activity(false)
 	refresh_pc_commands_indicator()
+	refresh_network_guard_header()
 	refresh_knowledge_discovery_indicator()
 	refresh_microphone_privacy_indicator()
+
+func refresh_network_guard_header() -> void:
+	if not is_instance_valid(network_guard_header_button):
+		return
+	var enabled := bool(settings.get("network_guard_enabled", false))
+	network_guard_header_button.visible = enabled
+	network_guard_header_button.text = "🛡 GUARD %d BLOCKED" % security_blocked_rules
+	network_guard_header_button.add_theme_color_override("font_color", colors.green)
+
+func open_network_guard_tab() -> void:
+	var tab := $Page/Tabs.get_node_or_null("Security Center")
+	if tab != null:
+		$Page/Tabs.current_tab = tab.get_index()
+		refresh_security_snapshot()
 
 func toggle_microphone_privacy() -> void:
 	var muting := not bool(settings.get("microphone_muted", false))
