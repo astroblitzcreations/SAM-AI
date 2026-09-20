@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="SAM-AI"
-config/version="1.0.3"
+config/version="1.0.4"
 run/main_scene="res://sam_ai_startup/SAMBoot.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 boot_splash/bg_color=Color(0.008, 0.022, 0.037, 1)

@@ -20,10 +20,10 @@ const VOICE_PYTHON := "E:/sam-ai/.venv/Scripts/python.exe"
 const VOICE_BRIDGE := "E:/sam-ai/voice/voice_bridge.py"
 const VOICE_DAEMON := "E:/sam-ai/voice/tts_daemon.py"
 const VOICE_DAEMON_PID_FILE := "user://tts_daemon.pid"
-const LLAMA_WINDOWS_BUILD := "b10883"
-const LLAMA_CPU_WINDOWS_URL := "https://github.com/ggml-org/llama.cpp/releases/download/b10883/llama-b10883-bin-win-cpu-x64.zip"
-const LLAMA_CUDA_WINDOWS_URL := "https://github.com/ggml-org/llama.cpp/releases/download/b10883/llama-b10883-bin-win-cuda-12.4-x64.zip"
-const LLAMA_CUDART_WINDOWS_URL := "https://github.com/ggml-org/llama.cpp/releases/download/b10883/cudart-llama-bin-win-cuda-12.4-x64.zip"
+const LLAMA_WINDOWS_BUILD := "b11064"
+const LLAMA_CPU_WINDOWS_URL := "https://github.com/ggml-org/llama.cpp/releases/download/b11064/llama-b11064-bin-win-cpu-x64.zip"
+const LLAMA_CUDA_WINDOWS_URL := "https://github.com/ggml-org/llama.cpp/releases/download/b11064/llama-b11064-bin-win-cuda-12.4-x64.zip"
+const LLAMA_CUDART_WINDOWS_URL := "https://github.com/ggml-org/llama.cpp/releases/download/b11064/cudart-llama-bin-win-cuda-12.4-x64.zip"
 const KOKORO_MODEL_URL := "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
 const KOKORO_VOICES_URL := "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 const WHISPER_WINDOWS_URL := "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-bin-x64.zip"
@@ -37,6 +37,7 @@ const CONTEXT_GROWTH_STEP := 2048
 const CONTEXT_MAX_RELOADS := 3
 const CONTEXT_MAX_OVERFLOW_RETRIES := 6
 const ENGINE_READY_TIMEOUT_MS := 180000
+const FIRST_TOKEN_TIMEOUT_MS := 90000
 const HOST := "127.0.0.1"
 const ESP_BRIDGE_HOST := "127.0.0.1"
 const ESP_BRIDGE_PORT := 8765
@@ -150,6 +151,7 @@ var stream_json_response := false
 var stream_error_started_ms := 0
 var load_started_ms := 0
 var response_started_ms := 0
+var stream_request_sent_ms := 0
 var response_text := ""
 var pending_repair_error := ""
 var pending_repair_language := ""
@@ -377,6 +379,7 @@ var setup_overlay: ColorRect
 var setup_model_path: LineEdit
 var setup_server_path: LineEdit
 var setup_checks: RichTextLabel
+var setup_check_poll_elapsed := 0.0
 var windows_runtime_request: HTTPRequest
 var windows_runtime_download_path := ""
 var startup_screen: Control
@@ -768,8 +771,12 @@ func setup_modules_tab() -> void:
 	add_runtime_download_row(content, "CPU-ONLY • UNIVERSAL FALLBACK", "module_url_llama_cpu", LLAMA_CPU_WINDOWS_URL, "Direct Windows x64 CPU package • no supported GPU required", "DOWNLOAD WINDOWS CPU")
 	add_runtime_download_row(content, "NVIDIA CUDA • FAST GPU (1 OF 2)", "module_url_llama_cuda", LLAMA_CUDA_WINDOWS_URL, "Direct Windows x64 CUDA 12.4 engine package", "DOWNLOAD CUDA ENGINE")
 	add_runtime_download_row(content, "NVIDIA CUDA DLLS (2 OF 2)", "module_url_llama_cudart", LLAMA_CUDART_WINDOWS_URL, "Required companion CUDA 12.4 DLL package • extract into the same folder", "DOWNLOAD CUDA DLLS")
+	var runtime_actions := HBoxContainer.new()
+	runtime_actions.add_theme_constant_override("separation", 7)
+	content.add_child(runtime_actions)
+	runtime_actions.add_child(make_button("CHECK OFFICIAL LATEST RELEASE", func(): open_web_url("https://github.com/ggml-org/llama.cpp/releases", "Open the official llama.cpp releases page to check for a newer Windows runtime"), colors.cyan))
 	var browse_runtime := make_button("LOAD LLAMA-SERVER.EXE", func(): browse_path("server_path"), colors.green)
-	content.add_child(browse_runtime)
+	runtime_actions.add_child(browse_runtime)
 	var voice_heading := Label.new()
 	voice_heading.text = "VOICE + MICROPHONE MODULES (OPTIONAL)"
 	voice_heading.add_theme_font_size_override("font_size", 20)
@@ -1764,6 +1771,10 @@ func discover_portable_components() -> void:
 	var portable_server := portable_root.path_join("engine/llama-server.exe")
 	if FileAccess.file_exists(portable_server):
 		settings.server_path = portable_server
+		# The bundled runtime is deliberately CPU-only so every supported Windows
+		# computer can start. Users can replace it with CUDA/Vulkan from Modules.
+		if not server_directory_has_acceleration(portable_server):
+			settings.gpu_layers = 0
 	var models_dir := portable_root.path_join("models")
 	if DirAccess.dir_exists_absolute(models_dir):
 		var directory := DirAccess.open(models_dir)
@@ -1772,6 +1783,44 @@ func discover_portable_components() -> void:
 				if filename.to_lower().ends_with(".gguf") and not filename.to_lower().contains("mmproj"):
 					settings.model_path = models_dir.path_join(filename)
 					break
+
+func server_directory_has_acceleration(server_path: String) -> bool:
+	var directory_path := server_path.strip_edges().get_base_dir()
+	var directory := DirAccess.open(directory_path)
+	if directory == null:
+		return false
+	var found_cublas := false
+	var found_cudart := false
+	for filename in directory.get_files():
+		var lower := filename.to_lower()
+		found_cublas = found_cublas or (lower.begins_with("cublas64_") and lower.ends_with(".dll"))
+		found_cudart = found_cudart or (lower.begins_with("cudart64_") and lower.ends_with(".dll"))
+		if lower in ["ggml-vulkan.dll", "ggml-hip.dll", "ggml-sycl.dll"]:
+			return true
+	return found_cublas and found_cudart
+
+func model_size_gb_for_path(model_path: String) -> float:
+	if not FileAccess.file_exists(model_path):
+		return 0.0
+	var total_bytes := 0
+	var filename := model_path.get_file()
+	var split_marker := filename.find("-00001-of-")
+	if split_marker >= 0:
+		var prefix := filename.left(split_marker)
+		var directory := DirAccess.open(model_path.get_base_dir())
+		if directory:
+			for candidate in directory.get_files():
+				if candidate.begins_with(prefix) and candidate.to_lower().ends_with(".gguf"):
+					var shard := FileAccess.open(model_path.get_base_dir().path_join(candidate), FileAccess.READ)
+					if shard:
+						total_bytes += shard.get_length()
+						shard.close()
+	else:
+		var file := FileAccess.open(model_path, FileAccess.READ)
+		if file:
+			total_bytes = file.get_length()
+			file.close()
+	return float(total_bytes) / 1073741824.0
 
 func show_first_run_setup() -> void:
 	setup_model_path.text = str(settings.model_path) if FileAccess.file_exists(str(settings.model_path)) else ""
@@ -1882,6 +1931,11 @@ func refresh_setup_checks(show_feedback: bool = false) -> void:
 	var windows_runtime_ok := FileAccess.file_exists("C:/Windows/System32/vcruntime140.dll")
 	var voice_ok := FileAccess.file_exists(str(settings.voice_python_path)) and FileAccess.file_exists(voice_runtime_script("voice_bridge.py")) and FileAccess.file_exists(str(settings.kokoro_model_path)) and FileAccess.file_exists(str(settings.kokoro_voices_path)) and FileAccess.file_exists(str(settings.whisper_exe_path)) and FileAccess.file_exists(str(settings.whisper_model_path))
 	var model_path := setup_model_path.text.strip_edges()
+	var model_gb := model_size_gb_for_path(model_path)
+	var memory := OS.get_memory_info()
+	var physical_gb := float(memory.get("physical", 0)) / 1073741824.0
+	var accelerated_runtime := server_directory_has_acceleration(setup_server_path.text.strip_edges())
+	var memory_ok := not model_ok or accelerated_runtime or physical_gb <= 0.0 or model_gb + 1.0 <= physical_gb
 	var shard_ok := true
 	if model_path.to_lower().contains("-00001-of-00002.gguf"):
 		shard_ok = FileAccess.file_exists(model_path.replace("-00001-of-00002.gguf", "-00002-of-00002.gguf"))
@@ -1892,15 +1946,19 @@ func refresh_setup_checks(show_feedback: bool = false) -> void:
 	setup_checks.append_text("[color=%s]%s[/color]  llama.cpp Windows engine\n" % ["#76f7a6" if server_ok else "#ff667d", "✓" if server_ok else "✕"])
 	setup_checks.append_text("[color=%s]%s[/color]  NVIDIA CUDA runtime beside engine\n" % ["#76f7a6" if cuda_ok else "#f9c74f", "✓" if cuda_ok else "!"])
 	setup_checks.append_text("[color=%s]%s[/color]  Microsoft Visual C++ runtime\n" % ["#76f7a6" if windows_runtime_ok else "#ff667d", "✓" if windows_runtime_ok else "✕"])
+	setup_checks.append_text("[color=%s]%s[/color]  Model fits this runtime + memory%s\n" % ["#76f7a6" if memory_ok else "#ff667d", "✓" if memory_ok else "✕", "" if memory_ok else " — %.2f GB model needs more than %.1f GB RAM on CPU; use the 3B model or a GPU runtime" % [model_gb, physical_gb]])
 	setup_checks.append_text("[color=%s]%s[/color]  Kokoro + Whisper voice package (optional)" % ["#76f7a6" if voice_ok else "#f9c74f", "✓" if voice_ok else "!"])
 	setup_checks.append_text("\n[color=%s]%s[/color]  Split GGUF companion shards\n" % ["#76f7a6" if shard_ok else "#ff667d", "✓" if shard_ok else "✕"])
 	setup_checks.append_text("[color=%s]%s[/color]  Vision model + matching MMPROJ (optional)" % ["#76f7a6" if vision_ok else "#f9c74f", "✓" if vision_ok else "!"])
 	if show_feedback:
-		var all_required_ok := model_ok and server_ok and windows_runtime_ok and shard_ok
+		var all_required_ok := model_ok and server_ok and windows_runtime_ok and shard_ok and memory_ok
 		setup_checks.append_text("\n\n[center][color=%s][b]COMPONENT CHECK COMPLETE • %s[/b][/color][/center]" % ["#76f7a6" if all_required_ok else "#f9c74f", Time.get_time_string_from_system()])
 		show_toast("Component check complete • ready" if all_required_ok else "Component check complete • review warnings")
 		set_status("COMPONENT CHECK COMPLETE", colors.green if all_required_ok else colors.amber)
-	$FirstRunSetup/Center/Panel/Margin/Content/Actions/Complete.disabled = not (model_ok and server_ok and windows_runtime_ok)
+	var setup_ready := model_ok and server_ok and windows_runtime_ok and shard_ok and memory_ok
+	var complete_button: Button = $FirstRunSetup/Center/Panel/Margin/Content/Actions/Complete
+	complete_button.disabled = not setup_ready
+	complete_button.text = "READY — COMPLETE SETUP + START SAM" if setup_ready else "COMPLETE SETUP + START SAM"
 	$FirstRunSetup/Center/Panel/Margin/Content/Actions/WindowsRuntime.disabled = windows_runtime_ok
 	$FirstRunSetup/Center/Panel/Margin/Content/Actions/WindowsRuntime.text = "WINDOWS RUNTIME INSTALLED" if windows_runtime_ok else "GET WINDOWS RUNTIME"
 
@@ -1963,6 +2021,17 @@ func complete_first_run() -> void:
 		return
 	settings.model_path = setup_model_path.text.strip_edges()
 	settings.server_path = setup_server_path.text.strip_edges()
+	var memory := OS.get_memory_info()
+	var physical_gb := float(memory.get("physical", 0)) / 1073741824.0
+	if physical_gb > 0.0 and physical_gb <= 6.0:
+		settings.context_size = 4096
+		settings.max_tokens = 1536
+		settings.auto_context_max = 8192
+	elif int(settings.context_size) < 8192:
+		settings.context_size = 8192
+	for key in ["context_size", "max_tokens"]:
+		if fields.has(key):
+			fields[key].text = setting_text(key)
 	save_json(SETTINGS_FILE, settings)
 	save_json(FIRST_RUN_FILE, {"complete": true, "completed_at": Time.get_datetime_string_from_system()})
 	for key in fields:
@@ -2251,7 +2320,23 @@ func start_engine(context_reload: bool = false) -> void:
 		log_line("ERROR", "Missing model: " + active_model)
 		set_startup_progress(0.0, "MODEL NOT FOUND", "Open Setup Check and select a GGUF model")
 		return
-	var args := ["-m", active_model, "-ngl", str(int(settings.gpu_layers)), "-c", str(int(settings.context_size)), "-np", "1", "--cache-ram", "256", "--port", str(int(settings.port)), "--host", HOST]
+	var accelerated_runtime := server_directory_has_acceleration(str(settings.server_path))
+	var effective_gpu_layers := int(settings.gpu_layers) if accelerated_runtime else 0
+	var memory := OS.get_memory_info()
+	var physical_gb := float(memory.get("physical", 0)) / 1073741824.0
+	var model_gb := model_size_gb_for_path(active_model)
+	if not accelerated_runtime and physical_gb > 0.0 and model_gb + 1.0 > physical_gb:
+		var fit_message := "The selected %.2f GB model cannot safely run with the CPU runtime in %.1f GB RAM. Choose the Qwen 3B starter model, or install a supported CUDA/Vulkan llama.cpp runtime." % [model_gb, physical_gb]
+		set_status("MODEL TOO LARGE FOR AVAILABLE RAM", colors.red)
+		set_startup_progress(0.0, "MODEL DOES NOT FIT", fit_message)
+		show_toast("Model is too large for this CPU-only setup • open Modules")
+		log_line("ERROR", fit_message)
+		show_first_run_setup()
+		return
+	var engine_log_path := ProjectSettings.globalize_path("user://llama_server.log")
+	if FileAccess.file_exists(engine_log_path):
+		DirAccess.remove_absolute(engine_log_path)
+	var args := ["-m", active_model, "-ngl", str(effective_gpu_layers), "-c", str(int(settings.context_size)), "-np", "1", "--cache-ram", "256", "--port", str(int(settings.port)), "--host", HOST, "--log-file", engine_log_path, "--log-colors", "off"]
 	if not active_mmproj.is_empty() and FileAccess.file_exists(active_mmproj):
 		args.append_array(["--mmproj", active_mmproj])
 	server_pid = OS.create_process(str(settings.server_path), args, false)
@@ -2273,10 +2358,13 @@ func start_engine(context_reload: bool = false) -> void:
 	load_started_ms = Time.get_ticks_msec()
 	loading_elapsed = 0.0
 	health_timer = 0.0
-	set_status("LOADING MODEL INTO VRAM", colors.amber)
-	set_startup_progress(52.0, "LOADING MODEL INTO VRAM", "GPU layers are being allocated • this can take a moment")
+	var load_target := "GPU + RAM" if effective_gpu_layers > 0 else "SYSTEM RAM (CPU MODE)"
+	set_status("LOADING MODEL INTO %s" % load_target, colors.amber)
+	set_startup_progress(52.0, "LOADING MODEL INTO %s" % load_target, "Preparing the local engine • first launch can take a moment")
 	log_line("ENGINE", "Started %s PID %s • %s" % [engine_mode.to_upper(), server_pid, active_model])
-	log_line("ENGINE", "Requested CUDA layers %s • context %s • port %s" % [int(settings.gpu_layers), int(settings.context_size), int(settings.port)])
+	log_line("ENGINE", "%s GPU layers • context %s • port %s • log %s" % [effective_gpu_layers, int(settings.context_size), int(settings.port), engine_log_path])
+	if not accelerated_runtime and int(settings.gpu_layers) > 0:
+		log_line("ENGINE", "CPU-only runtime detected; GPU layers were safely changed from %d to 0 for this launch" % int(settings.gpu_layers))
 	# Wait for a real /health 200 before either context recovery or vision replay.
 	# Process creation alone does not mean that the model has finished loading.
 	server_ready = false
@@ -2328,6 +2416,13 @@ func setting_text(key: String) -> String:
 	return str(settings[key])
 
 func _process(delta: float) -> void:
+	if is_instance_valid(setup_overlay) and setup_overlay.visible:
+		setup_check_poll_elapsed += delta
+		if setup_check_poll_elapsed >= 1.0:
+			setup_check_poll_elapsed = 0.0
+			# The Microsoft installer runs in its own window. Re-check automatically
+			# so setup becomes ready without a hidden second manual check step.
+			refresh_setup_checks()
 	if privacy_activity_active and privacy_reset_at_msec > 0 and Time.get_ticks_msec() >= privacy_reset_at_msec:
 		set_privacy_activity(false)
 	poll_spellcheck(delta)
@@ -2365,7 +2460,7 @@ func _process(delta: float) -> void:
 				return
 			server_pid = -1
 			set_status("ENGINE EXITED • CHECK DEBUG", colors.red)
-			log_line("ERROR", "llama-server exited during startup")
+			log_line("ERROR", "llama-server exited during startup" + engine_log_failure_suffix())
 			recover_failed_vision_switch("Vision engine exited during startup")
 			return
 		# Poll the transport every frame; poll_health throttles reconnects itself.
@@ -2500,9 +2595,20 @@ func drain_render_buffer() -> void:
 func update_loading_animation() -> void:
 	var glyphs := ["◐", "◓", "◑", "◒"]
 	var dots := ".".repeat(int(loading_elapsed * 2.0) % 4)
-	set_status("%s LOADING MODEL INTO VRAM%s" % [glyphs[int(loading_elapsed * 6.0) % 4], dots], colors.amber)
+	var target := "GPU + RAM" if server_directory_has_acceleration(str(settings.server_path)) and int(settings.gpu_layers) > 0 else "SYSTEM RAM (CPU MODE)"
+	set_status("%s LOADING MODEL INTO %s%s" % [glyphs[int(loading_elapsed * 6.0) % 4], target, dots], colors.amber)
 	var visual_progress := minf(94.0, 52.0 + loading_elapsed * 3.2)
-	set_startup_progress(visual_progress, "%s LOADING MODEL INTO VRAM%s" % [glyphs[int(loading_elapsed * 6.0) % 4], dots], "Starting CUDA layers, context cache, and local API")
+	set_startup_progress(visual_progress, "%s LOADING MODEL INTO %s%s" % [glyphs[int(loading_elapsed * 6.0) % 4], target, dots], "Preparing model weights, context cache, and the private local API")
+
+func engine_log_failure_suffix() -> String:
+	var path := ProjectSettings.globalize_path("user://llama_server.log")
+	if not FileAccess.file_exists(path):
+		return ""
+	var detail := FileAccess.get_file_as_string(path).strip_edges()
+	if detail.is_empty():
+		return ""
+	detail = detail.right(1200).replace("\r", " ").replace("\n", " | ")
+	return " • llama.cpp: " + detail
 
 func poll_health() -> void:
 	# A live PID is NOT proof of readiness. Keep polling the actual HTTP health
@@ -3233,6 +3339,7 @@ func reset_stream_response_state() -> void:
 	stream_http_body.clear()
 	stream_json_response = false
 	stream_error_started_ms = 0
+	stream_request_sent_ms = 0
 
 func set_context_setting(value: int) -> void:
 	settings.context_size = value
@@ -4907,6 +5014,9 @@ func poll_stream() -> void:
 	if stream_retry_not_before_ms > 0:
 		stream_retry_not_before_ms = 0
 		stream_client.connect_to_host(HOST, int(settings.port))
+	if bool(get_meta("request_sent", false)) and response_text.is_empty() and stream_request_sent_ms > 0 and Time.get_ticks_msec() - stream_request_sent_ms > FIRST_TOKEN_TIMEOUT_MS:
+		fail_generation("The local model produced no reply within 90 seconds. The model may be too large for this computer, or the selected runtime may not match its GPU. Try the bundled CPU runtime with the 3B starter model, or install the matching CUDA runtime in Modules." + engine_log_failure_suffix())
+		return
 	var err := stream_client.poll()
 	if err != OK:
 		if stream_response_code >= 400:
@@ -4923,6 +5033,7 @@ func poll_stream() -> void:
 			fail_generation("Request error %s" % err)
 			return
 		set_meta("request_sent", true)
+		stream_request_sent_ms = Time.get_ticks_msec()
 		return
 	if stream_client.get_status() == HTTPClient.STATUS_BODY:
 		if stream_response_code == 0:
@@ -8938,6 +9049,8 @@ func refresh_system_specs() -> void:
 	var memory := OS.get_memory_info()
 	var total_ram_gb := float(memory.get("physical", 0)) / 1073741824.0
 	var available_ram_gb := float(memory.get("available", memory.get("free", 0))) / 1073741824.0
+	if total_ram_gb > 0.0:
+		available_ram_gb = minf(available_ram_gb, total_ram_gb)
 	var gpu_name := RenderingServer.get_video_adapter_name()
 	var gpu_api := RenderingServer.get_video_adapter_api_version()
 	var gpu_vram_mb := 0.0
@@ -8984,26 +9097,7 @@ func refresh_system_specs() -> void:
 	system_report.append_text("[color=#8292ad]CPU fallback is not inherently dangerous, but sustained inference can run the processor hot. Keep vents clear and monitor temperatures. If the machine becomes unstable, reduce GPU layers/context or choose a smaller model.[/color]")
 
 func get_selected_model_size_gb() -> float:
-	var model_path := str(settings.model_path)
-	if not FileAccess.file_exists(model_path):
-		return 0.0
-	var total_bytes := 0
-	var filename := model_path.get_file()
-	var split_marker := filename.find("-00001-of-")
-	if split_marker >= 0:
-		var prefix := filename.left(split_marker)
-		var directory := DirAccess.open(model_path.get_base_dir())
-		if directory:
-			for entry in directory.get_files():
-				if entry.begins_with(prefix) and entry.to_lower().ends_with(".gguf"):
-					var shard := FileAccess.open(model_path.get_base_dir().path_join(entry), FileAccess.READ)
-					if shard:
-						total_bytes += shard.get_length()
-	else:
-		var file := FileAccess.open(model_path, FileAccess.READ)
-		if file:
-			total_bytes = file.get_length()
-	return float(total_bytes) / 1073741824.0
+	return model_size_gb_for_path(str(settings.model_path))
 
 func ask_sam_about_system() -> void:
 	$Page/Tabs.current_tab = 0
