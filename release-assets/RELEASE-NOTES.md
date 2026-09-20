@@ -1,4 +1,13 @@
-# SAM-AI v1.2.0
+# SAM-AI v1.2.1
+
+## Fixed in v1.2.1
+
+- Process-details OK and title-bar close controls now reliably dismiss and free the dialog.
+- Security dialogs and right-click menus use SAM-AI's dark cyan panel, border, hover, typography, and button styling.
+- Right-click selection now uses each Tree's GUI coordinates, reliably selecting the row under the pointer before opening its menu.
+- Ascending and descending comparators now return strict ordering for equal values, fixing Godot's `bad comparison function` errors.
+
+## New in v1.2.0
 
 ## New in v1.2.0
 

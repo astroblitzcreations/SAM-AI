@@ -11167,7 +11167,7 @@ func setup_security_center() -> void:
 		security_connection_tree.set_column_title(column, ["APP", "PID", "STATE", "LOCAL", "REMOTE", "DIRECTION"][column])
 	security_connection_tree.hide_root = true
 	security_connection_tree.column_title_clicked.connect(sort_security_connections)
-	security_connection_tree.item_mouse_selected.connect(_on_security_connection_mouse_selected)
+	security_connection_tree.gui_input.connect(_on_security_connection_gui_input)
 	page.add_child(security_connection_tree)
 	var apps_title := Label.new()
 	apps_title.text = "RUNNING APPLICATIONS  //  SELECT AN APP FOR SAFE ACTIONS"
@@ -11182,7 +11182,7 @@ func setup_security_center() -> void:
 	security_process_tree.hide_root = true
 	security_process_tree.item_selected.connect(select_security_process)
 	security_process_tree.item_activated.connect(show_selected_process_details)
-	security_process_tree.item_mouse_selected.connect(_on_security_process_mouse_selected)
+	security_process_tree.gui_input.connect(_on_security_process_gui_input)
 	security_process_tree.column_title_clicked.connect(sort_security_processes)
 	page.add_child(security_process_tree)
 	var app_actions := HBoxContainer.new()
@@ -11229,7 +11229,7 @@ func setup_security_center() -> void:
 		security_rules_tree.set_column_title(column, ["RULE", "DIRECTION", "ACTION", "ENABLED", "PROFILE", "PROGRAM", "OWNER"][column])
 	security_rules_tree.hide_root = true
 	security_rules_tree.item_selected.connect(select_security_rule)
-	security_rules_tree.item_mouse_selected.connect(_on_security_rule_mouse_selected)
+	security_rules_tree.gui_input.connect(_on_security_rule_gui_input)
 	page.add_child(security_rules_tree)
 	security_report = RichTextLabel.new()
 	security_report.bbcode_enabled = true
@@ -11378,8 +11378,12 @@ func sort_security_processes(column: int, _button: int) -> void:
 	security_processes.sort_custom(func(a: Dictionary, b: Dictionary):
 		var left = a.get(key, "")
 		var right = b.get(key, "")
-		var less := float(left) < float(right) if key in ["pid", "memory"] else str(left).naturalnocasecmp_to(str(right)) < 0
-		return less if security_process_sort_ascending else not less)
+		var comparison := 0
+		if key in ["pid", "memory"]:
+			comparison = -1 if float(left) < float(right) else (1 if float(left) > float(right) else 0)
+		else:
+			comparison = str(left).naturalnocasecmp_to(str(right))
+		return comparison < 0 if security_process_sort_ascending else comparison > 0)
 	populate_security_processes(security_processes)
 
 func sort_security_connections(column: int, _button: int) -> void:
@@ -11391,24 +11395,34 @@ func sort_security_connections(column: int, _button: int) -> void:
 	var keys := ["name", "pid", "state", "local", "remote", "direction"]
 	var key: String = keys[column]
 	security_connections.sort_custom(func(a: Dictionary, b: Dictionary):
-		var less := float(a.get(key, 0)) < float(b.get(key, 0)) if key == "pid" else str(a.get(key, "")).naturalnocasecmp_to(str(b.get(key, ""))) < 0
-		return less if security_connection_sort_ascending else not less)
+		var comparison := 0
+		if key == "pid":
+			comparison = -1 if float(a.get(key, 0)) < float(b.get(key, 0)) else (1 if float(a.get(key, 0)) > float(b.get(key, 0)) else 0)
+		else:
+			comparison = str(a.get(key, "")).naturalnocasecmp_to(str(b.get(key, "")))
+		return comparison < 0 if security_connection_sort_ascending else comparison > 0)
 	populate_security_connections(security_connections)
 
-func _on_security_process_mouse_selected(_position: Vector2, button: int) -> void:
-	select_security_process()
-	if button == MOUSE_BUTTON_RIGHT:
-		show_security_context_menu(true)
+func _on_security_process_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		var item := security_process_tree.get_item_at_position(event.position)
+		if item != null:
+			item.select(0)
+			select_security_process()
+			show_security_context_menu(true)
+			security_process_tree.accept_event()
 
-func _on_security_connection_mouse_selected(_position: Vector2, button: int) -> void:
-	var item := security_connection_tree.get_selected()
-	if item != null and item.get_metadata(0) is Dictionary:
-		var value: Dictionary = item.get_metadata(0)
-		security_selected_pid = int(value.get("pid", -1))
-		security_selected_name = str(value.get("name", ""))
-		security_selected_path = str(value.get("path", ""))
-	if button == MOUSE_BUTTON_RIGHT:
-		show_security_context_menu(false)
+func _on_security_connection_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		var item := security_connection_tree.get_item_at_position(event.position)
+		if item != null and item.get_metadata(0) is Dictionary:
+			item.select(0)
+			var value: Dictionary = item.get_metadata(0)
+			security_selected_pid = int(value.get("pid", -1))
+			security_selected_name = str(value.get("name", ""))
+			security_selected_path = str(value.get("path", ""))
+			show_security_context_menu(false)
+			security_connection_tree.accept_event()
 
 func setup_security_context_menu() -> void:
 	security_context_menu = PopupMenu.new()
@@ -11427,11 +11441,12 @@ func setup_security_context_menu() -> void:
 	security_context_menu.add_item("Force end as administrator", 10)
 	security_context_menu.id_pressed.connect(handle_security_context_action)
 	add_child(security_context_menu)
+	style_security_popup_menu(security_context_menu)
 
 func show_security_context_menu(_from_process: bool) -> void:
 	if security_selected_pid < 0:
 		return
-	security_context_menu.position = DisplayServer.mouse_get_position()
+	security_context_menu.position = Vector2i(get_viewport().get_mouse_position())
 	security_context_menu.popup()
 
 func handle_security_context_action(id: int) -> void:
@@ -11463,10 +11478,17 @@ func show_selected_process_details() -> void:
 		if action == &"ask": explain_selected_process()
 		elif action == &"search": search_selected_process()
 		elif action == &"open" and FileAccess.file_exists(security_selected_path): OS.shell_open(security_selected_path.get_base_dir()))
-	details.canceled.connect(details.queue_free)
-	details.confirmed.connect(details.queue_free)
+	var close_details := func():
+		if is_instance_valid(details) and not details.is_queued_for_deletion():
+			details.hide()
+			details.queue_free()
+	details.get_ok_button().pressed.connect(close_details)
+	details.close_requested.connect(close_details)
+	details.canceled.connect(close_details)
+	details.confirmed.connect(close_details)
 	add_child(details)
 	apply_theme_recursive(details)
+	style_security_dialog(details, colors.cyan)
 	details.popup_centered(Vector2i(760, 380))
 
 func select_security_rule() -> void:
@@ -11474,10 +11496,14 @@ func select_security_rule() -> void:
 	if item != null and item.get_metadata(0) is Dictionary:
 		security_selected_rule = str((item.get_metadata(0) as Dictionary).get("name", ""))
 
-func _on_security_rule_mouse_selected(_position: Vector2, button: int) -> void:
-	select_security_rule()
-	if button == MOUSE_BUTTON_RIGHT:
-		show_rule_context_menu()
+func _on_security_rule_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		var item := security_rules_tree.get_item_at_position(event.position)
+		if item != null:
+			item.select(0)
+			select_security_rule()
+			show_rule_context_menu()
+			security_rules_tree.accept_event()
 
 func show_rule_context_menu() -> void:
 	if security_selected_rule.is_empty(): return
@@ -11490,7 +11516,7 @@ func show_rule_context_menu() -> void:
 		elif id == 4: run_firewall_admin_action("rule_remove", "", "", security_selected_rule)
 		menu.queue_free())
 	menu.popup_hide.connect(menu.queue_free)
-	add_child(menu); menu.position = DisplayServer.mouse_get_position(); menu.popup()
+	add_child(menu); apply_theme_recursive(menu); style_security_popup_menu(menu); menu.position = Vector2i(get_viewport().get_mouse_position()); menu.popup()
 
 func detect_new_security_connections(items: Array) -> void:
 	var current: Dictionary = {}
@@ -11832,7 +11858,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.0 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.1 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
@@ -14277,6 +14303,7 @@ func show_enable_pc_commands_confirmation() -> void:
 
 func style_security_dialog(dialog: AcceptDialog, accent: Color) -> void:
 	dialog.min_size = Vector2i(680, 350)
+	dialog.transparent_bg = true
 	var label := dialog.get_label()
 	if label:
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -14294,8 +14321,36 @@ func style_security_dialog(dialog: AcceptDialog, accent: Color) -> void:
 	panel.shadow_color = Color(0, 0, 0, 0.65)
 	panel.shadow_size = 18
 	dialog.add_theme_stylebox_override("panel", panel)
+	apply_dialog_panel_style(dialog, panel)
 	dialog.add_theme_color_override("title_color", accent)
 	style_dialog_controls(dialog, accent)
+
+func apply_dialog_panel_style(node: Node, panel_style: StyleBoxFlat) -> void:
+	for child in node.get_children():
+		if child is Panel:
+			(child as Panel).add_theme_stylebox_override("panel", panel_style)
+		elif child is PanelContainer:
+			(child as PanelContainer).add_theme_stylebox_override("panel", panel_style)
+		apply_dialog_panel_style(child, panel_style)
+
+func style_security_popup_menu(menu: PopupMenu) -> void:
+	menu.add_theme_color_override("font_color", colors.text)
+	menu.add_theme_color_override("font_hover_color", Color.WHITE)
+	menu.add_theme_color_override("font_separator_color", colors.muted)
+	var panel := StyleBoxFlat.new()
+	panel.bg_color = Color("#08111f")
+	panel.border_color = colors.cyan
+	panel.set_border_width_all(2)
+	panel.set_corner_radius_all(9)
+	panel.content_margin_left = 8
+	panel.content_margin_right = 8
+	panel.content_margin_top = 8
+	panel.content_margin_bottom = 8
+	menu.add_theme_stylebox_override("panel", panel)
+	var hover := StyleBoxFlat.new()
+	hover.bg_color = Color("#183149")
+	hover.set_corner_radius_all(6)
+	menu.add_theme_stylebox_override("hover", hover)
 
 func style_dialog_controls(node: Node, accent: Color) -> void:
 	for child in node.get_children():
