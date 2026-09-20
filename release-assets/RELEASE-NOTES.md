@@ -1,4 +1,15 @@
-# SAM-AI v1.2.2
+# SAM-AI v1.2.3
+
+## Fixed in v1.2.3
+
+- Trust App and Block App now save the normalized executable identity immediately in SAM settings, independently of the later Windows UAC/firewall operation.
+- Trusted and blocked apps suppress repeat connection alerts across refreshes and restarts.
+- Changing a remembered policy automatically removes the app from the opposite list.
+- Guard Policies includes SAM-memory decisions even while Windows rules are awaiting approval or refresh.
+- Network alerts use a compact Allow Once, Trust App, Block App, and More Info layout that fits narrower windows.
+- Security headers and action bars wrap responsively, dialogs are resizable, and the main tab strip scrolls to keep selected tabs accessible.
+
+## Fixed in v1.2.2
 
 ## Fixed in v1.2.2
 

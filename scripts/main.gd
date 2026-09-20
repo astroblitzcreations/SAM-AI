@@ -112,7 +112,9 @@ var settings := {
 	"visual_module_preference": "auto",
 	"ai_visual_planning_enabled": true,
 	"generation_fallback_enabled": true,
-	"network_guard_enabled": false
+	"network_guard_enabled": false,
+	"network_trusted_apps": [],
+	"network_blocked_apps": []
 }
 var history: Array = []
 var server_pid := -1
@@ -730,6 +732,10 @@ func configure_all_tab_scrolling() -> void:
 	# with a native scrollbar. Force scrollbars visible so new users can tell that
 	# more content exists instead of assuming it was cut off.
 	var pending: Array[Node] = [$Page/Tabs]
+	var top_tab_bar: TabBar = $Page/Tabs.get_tab_bar()
+	top_tab_bar.scrolling_enabled = true
+	top_tab_bar.scroll_to_selected = true
+	top_tab_bar.select_with_rmb = false
 	while not pending.is_empty():
 		var node: Node = pending.pop_back()
 		for child in node.get_children():
@@ -2203,7 +2209,7 @@ func build_ui() -> void:
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 18)
 	root.add_theme_constant_override("separation", 12)
 	add_child(root)
-	var header := HBoxContainer.new()
+	var header := HFlowContainer.new()
 	header.custom_minimum_size.y = 62
 	root.add_child(header)
 	var brand := Label.new()
@@ -11147,7 +11153,7 @@ func setup_security_center() -> void:
 	guidance.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	guidance.add_theme_color_override("font_color", colors.amber)
 	page.add_child(guidance)
-	var guard_row := HBoxContainer.new()
+	var guard_row := HFlowContainer.new()
 	page.add_child(guard_row)
 	security_guard_label = Label.new()
 	security_guard_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -11189,7 +11195,7 @@ func setup_security_center() -> void:
 	security_process_tree.gui_input.connect(_on_security_process_gui_input)
 	security_process_tree.column_title_clicked.connect(sort_security_processes)
 	page.add_child(security_process_tree)
-	var app_actions := HBoxContainer.new()
+	var app_actions := HFlowContainer.new()
 	page.add_child(app_actions)
 	app_actions.add_child(make_button("✦ ASK SAM WHAT IT IS", explain_selected_process, colors.cyan))
 	app_actions.add_child(make_button("🌐 SEARCH ONLINE", search_selected_process, colors.cyan))
@@ -11263,7 +11269,7 @@ func setup_security_policy_tab() -> void:
 	var security_tab := tabs.get_node_or_null("Security Center")
 	if security_tab != null:
 		tabs.move_child(page, security_tab.get_index() + 1)
-	var header := HBoxContainer.new()
+	var header := HFlowContainer.new()
 	page.add_child(header)
 	var title := Label.new()
 	title.text = "SAM NETWORK GUARD POLICIES  //  REMEMBERED ALLOW + BLOCK DECISIONS"
@@ -11289,7 +11295,7 @@ func setup_security_policy_tab() -> void:
 	security_policies_tree.item_activated.connect(show_selected_policy_details)
 	security_policies_tree.gui_input.connect(_on_security_policy_gui_input)
 	page.add_child(security_policies_tree)
-	var actions := HBoxContainer.new()
+	var actions := HFlowContainer.new()
 	page.add_child(actions)
 	actions.add_child(make_button("ALLOW APP", func(): change_selected_policy("allow"), colors.green))
 	actions.add_child(make_button("BLOCK APP", func(): change_selected_policy("block"), colors.red))
@@ -11437,13 +11443,23 @@ func populate_security_policies(items: Array) -> void:
 			continue
 		var path := str(value.get("program", ""))
 		var app_name := name.trim_prefix("SAM Network Guard - ").trim_suffix(" - IN").trim_suffix(" - OUT")
-		var key := path if not path.is_empty() else app_name
+		var key := normalized_network_app_path(path) if not path.is_empty() else app_name.to_lower()
 		if not grouped.has(key):
 			grouped[key] = {"name":app_name, "path":path, "action":str(value.get("action", "Unknown")), "enabled":true, "profile":str(value.get("profile", "Any")), "directions":[], "rules":[]}
 		var policy: Dictionary = grouped[key]
 		policy.directions.append(str(value.get("direction", "")))
 		policy.rules.append(name)
 		if str(value.get("enabled", "True")) != "True": policy.enabled = false
+	for trusted_path in remembered_network_paths("network_trusted_apps"):
+		var path := str(trusted_path)
+		var key := normalized_network_app_path(path)
+		if not grouped.has(key): grouped[key] = {"name":path.get_file(), "path":path, "action":"Trusted", "enabled":true, "profile":"SAM memory", "directions":["IN", "OUT"], "rules":[]}
+		else: grouped[key].action = "Trusted"
+	for blocked_path in remembered_network_paths("network_blocked_apps"):
+		var path := str(blocked_path)
+		var key := normalized_network_app_path(path)
+		if not grouped.has(key): grouped[key] = {"name":path.get_file(), "path":path, "action":"Blocked", "enabled":true, "profile":"SAM memory", "directions":["IN", "OUT"], "rules":[]}
+		else: grouped[key].action = "Blocked"
 	security_policies_tree.clear()
 	var root := security_policies_tree.create_item()
 	for key in grouped:
@@ -11503,10 +11519,12 @@ func show_selected_policy_details() -> void:
 
 func change_selected_policy(action: String) -> void:
 	if security_selected_path.is_empty(): show_toast("Select an application policy first"); return
+	remember_network_app(security_selected_path, action == "allow")
 	run_firewall_admin_action(action, security_selected_name, security_selected_path)
 
 func remove_selected_policy() -> void:
 	if security_selected_path.is_empty(): show_toast("Select an application policy first"); return
+	forget_network_app(security_selected_path)
 	run_firewall_admin_action("policy_remove", security_selected_name, security_selected_path)
 
 func ask_sam_about_policy() -> void:
@@ -11684,13 +11702,60 @@ func detect_new_security_connections(items: Array) -> void:
 		var remote := str(value.get("remote", ""))
 		var key := "%s|%s|%s|%s" % [value.get("pid", 0), value.get("state", ""), value.get("local", ""), remote]
 		current[key] = true
-		if security_alert_baseline_ready and not security_seen_connections.has(key) and is_external_security_connection(value) and security_alert_queue.size() < 8:
+		if security_alert_baseline_ready and not security_seen_connections.has(key) and is_external_security_connection(value) and not is_remembered_network_app(value) and security_alert_queue.size() < 8:
 			security_alert_queue.append(value)
 	security_seen_connections = current
 	if not security_alert_baseline_ready:
 		security_alert_baseline_ready = true
 	elif bool(settings.get("network_guard_enabled", false)):
 		show_next_security_alert()
+
+func normalized_network_app_path(path: String) -> String:
+	return path.strip_edges().replace("/", "\\").to_lower()
+
+func remembered_network_paths(setting_name: String) -> Array:
+	var stored = settings.get(setting_name, [])
+	return stored if stored is Array else []
+
+func is_remembered_network_app(connection: Dictionary) -> bool:
+	var path := normalized_network_app_path(str(connection.get("path", "")))
+	if path.is_empty():
+		return false
+	for setting_name in ["network_trusted_apps", "network_blocked_apps"]:
+		for stored_path in remembered_network_paths(setting_name):
+			if normalized_network_app_path(str(stored_path)) == path:
+				return true
+	return false
+
+func remember_network_app(path: String, trusted: bool) -> void:
+	var normalized := normalized_network_app_path(path)
+	if normalized.is_empty():
+		show_toast("The app path is unavailable, so SAM cannot remember it")
+		return
+	var target_key := "network_trusted_apps" if trusted else "network_blocked_apps"
+	var other_key := "network_blocked_apps" if trusted else "network_trusted_apps"
+	var target: Array = remembered_network_paths(target_key).duplicate()
+	var other: Array = remembered_network_paths(other_key).duplicate()
+	for index in range(other.size() - 1, -1, -1):
+		if normalized_network_app_path(str(other[index])) == normalized: other.remove_at(index)
+	var already_saved := false
+	for stored_path in target:
+		if normalized_network_app_path(str(stored_path)) == normalized: already_saved = true; break
+	if not already_saved: target.append(path)
+	settings[target_key] = target
+	settings[other_key] = other
+	save_json(SETTINGS_FILE, settings)
+	show_toast(("Trusted app remembered" if trusted else "Blocked app remembered") + " • future alerts suppressed")
+	populate_security_policies(security_rules)
+
+func forget_network_app(path: String) -> void:
+	var normalized := normalized_network_app_path(path)
+	for setting_name in ["network_trusted_apps", "network_blocked_apps"]:
+		var paths: Array = remembered_network_paths(setting_name).duplicate()
+		for index in range(paths.size() - 1, -1, -1):
+			if normalized_network_app_path(str(paths[index])) == normalized: paths.remove_at(index)
+		settings[setting_name] = paths
+	save_json(SETTINGS_FILE, settings)
 
 func is_external_security_connection(value: Dictionary) -> bool:
 	var remote := str(value.get("remote", ""))
@@ -11707,24 +11772,17 @@ func show_next_security_alert() -> void:
 	var dialog := AcceptDialog.new()
 	dialog.title = "SAM NETWORK GUARD • NEW NETWORK ACTIVITY"
 	var is_listener := str(connection.get("state", "")) == "Listen"
-	dialog.dialog_text = "%s\n\nApp: %s\nPID: %s\nDirection: %s\nLocal: %s\nRemote: %s\nExecutable: %s\n\nALLOW ONCE dismisses this alert. REMEMBER ALLOW or BLOCK creates inbound and outbound Windows Firewall rules and requests one-time administrator approval." % ["An app opened a non-loopback inbound listener." if is_listener else "An app connected to a remote address.", connection.get("name", "unknown"), connection.get("pid", 0), connection.get("direction", ""), connection.get("local", ""), connection.get("remote", ""), connection.get("path", "Unavailable")]
+	dialog.dialog_text = "%s\n\nApp: %s\nPID: %s\nDirection: %s\nLocal: %s\nRemote: %s\nExecutable: %s\n\nALLOW ONCE dismisses only this alert. TRUST APP or BLOCK APP is saved immediately in SAM and suppresses repeat alerts; Windows Firewall enforcement then requests one-time administrator approval." % ["An app opened a non-loopback inbound listener." if is_listener else "An app connected to a remote address.", connection.get("name", "unknown"), connection.get("pid", 0), connection.get("direction", ""), connection.get("local", ""), connection.get("remote", ""), connection.get("path", "Unavailable")]
 	dialog.ok_button_text = "ALLOW ONCE"
-	dialog.add_button("REMEMBER ALLOW", true, "allow")
+	dialog.add_button("TRUST APP", true, "allow")
 	dialog.add_button("BLOCK APP", true, "block")
-	dialog.add_button("IP LOOKUP", true, "ip")
-	dialog.add_button("SEARCH APP + IP", true, "search")
-	dialog.add_button("ASK SAM", true, "sam")
-	dialog.add_button("COPY DETAILS", true, "copy")
+	dialog.add_button("MORE INFO…", true, "more")
 	dialog.custom_action.connect(func(action: StringName):
 		var app_name := str(connection.get("name", "unknown"))
 		var app_path := str(connection.get("path", ""))
-		if action == &"allow" and FileAccess.file_exists(app_path): run_firewall_admin_action("allow", app_name, app_path)
-		elif action == &"block" and FileAccess.file_exists(app_path): run_firewall_admin_action("block", app_name, app_path)
-		elif action == &"ip": search_connection_ip(connection)
-		elif action == &"search": search_connection_app(connection)
-		elif action == &"sam": ask_sam_about_connection(connection)
-		elif action == &"copy": DisplayServer.clipboard_set(connection_details_text(connection)); show_toast("Network details copied")
-		dialog.hide())
+		if action == &"allow" and FileAccess.file_exists(app_path): remember_network_app(app_path, true); run_firewall_admin_action("allow", app_name, app_path); dialog.hide()
+		elif action == &"block" and FileAccess.file_exists(app_path): remember_network_app(app_path, false); run_firewall_admin_action("block", app_name, app_path); dialog.hide()
+		elif action == &"more": show_network_research_options(connection))
 	dialog.visibility_changed.connect(func():
 		if not dialog.visible:
 			security_alert_dialog_open = false
@@ -12069,7 +12127,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.2 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.3 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
@@ -14514,6 +14572,7 @@ func show_enable_pc_commands_confirmation() -> void:
 
 func style_security_dialog(dialog: AcceptDialog, accent: Color) -> void:
 	dialog.min_size = Vector2i(680, 350)
+	dialog.unresizable = false
 	dialog.transparent_bg = true
 	var label := dialog.get_label()
 	if label:
