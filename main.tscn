@@ -55,7 +55,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.302, 0.933, 0.918, 1)
 theme_override_font_sizes/font_size = 22
-text = "SAM-AI v1.0.2 by forge & Makazhan"
+text = "SAM-AI v1.0.3 by forge & Makazhan"
 
 [node name="StatusDot" type="Label" parent="Page/Header" unique_id=429073866]
 layout_mode = 2
@@ -75,7 +75,7 @@ layout_mode = 2
 theme_override_constants/separation = 8
 metadata/_tab_index = 0
 
-[node name="TopPadding" type="Control" parent="Page/Tabs/Chat"]
+[node name="TopPadding" type="Control" parent="Page/Tabs/Chat" unique_id=1093693725]
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
 
@@ -85,6 +85,7 @@ size_flags_vertical = 3
 focus_mode = 2
 bbcode_enabled = true
 scroll_following = true
+shortcut_keys_enabled = false
 selection_enabled = true
 
 [node name="Composer" type="VBoxContainer" parent="Page/Tabs/Chat" unique_id=1210458475]
@@ -97,16 +98,13 @@ custom_minimum_size = Vector2(0, 135)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
-focus_mode = 2
-editable = true
 placeholder_text = "Message Sam...  Enter sends • Shift+Enter adds a line • ↑/↓ recalls"
 wrap_mode = 1
 
-[node name="AttachmentPreview" type="TextureRect" parent="Page/Tabs/Chat/Composer"]
+[node name="AttachmentPreview" type="TextureRect" parent="Page/Tabs/Chat/Composer" unique_id=100145910]
 visible = false
 custom_minimum_size = Vector2(150, 112)
 layout_mode = 2
-mouse_filter = 1
 expand_mode = 1
 stretch_mode = 5
 
@@ -128,26 +126,26 @@ text = "ABORT"
 [node name="Attach" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=2064711470]
 layout_mode = 2
 size_flags_horizontal = 3
-text = "📎 ATTACH FILE"
 tooltip_text = "Attach an image, text document, source code, JSON, Markdown, or log file — or drag and drop it anywhere"
+text = "📎 ATTACH FILE"
 
-[node name="Microphone" type="Button" parent="Page/Tabs/Chat/Composer/Actions"]
+[node name="Microphone" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=515930963]
 layout_mode = 2
 size_flags_horizontal = 3
-text = "🎙 START TALKING"
 tooltip_text = "Click to record, then click again to transcribe locally"
+text = "🎙 START TALKING"
 
 [node name="NewSession" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=1253765534]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "NEW SESSION"
 
-[node name="ClearScreen" type="Button" parent="Page/Tabs/Chat/Composer/Actions"]
+[node name="ClearScreen" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=764946090]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "CLEAR SCREEN"
 
-[node name="CopyChat" type="Button" parent="Page/Tabs/Chat/Composer/Actions"]
+[node name="CopyChat" type="Button" parent="Page/Tabs/Chat/Composer/Actions" unique_id=2081971948]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "COPY CHAT"
@@ -156,31 +154,27 @@ text = "COPY CHAT"
 layout_mode = 2
 text = "Drop an image, text, code, JSON, Markdown, or log file here • No file attached"
 
-[node name="VoiceBar" type="HBoxContainer" parent="Page/Tabs/Chat"]
+[node name="VoiceBar" type="HBoxContainer" parent="Page/Tabs/Chat" unique_id=193678491]
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="VoiceStatus" type="Label" parent="Page/Tabs/Chat/VoiceBar"]
+[node name="VoiceStatus" type="Label" parent="Page/Tabs/Chat/VoiceBar" unique_id=4915196]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "VOICE • READY"
 
-[node name="ThemeButton" type="Button" parent="Page/Tabs/Chat/VoiceBar"]
+[node name="ThemeButton" type="Button" parent="Page/Tabs/Chat/VoiceBar" unique_id=2121301284]
 layout_mode = 2
 text = "🎨 THEME"
 
-[node name="ChatAutoSpeak" type="CheckButton" parent="Page/Tabs/Chat/VoiceBar"]
+[node name="ChatAutoSpeak" type="CheckButton" parent="Page/Tabs/Chat/VoiceBar" unique_id=560358453]
 layout_mode = 2
-text = "SAM TALKS"
 tooltip_text = "Automatically speak Sam's replies; code blocks are not read aloud"
+text = "SAM TALKS"
 
-[node name="StopVoice" type="Button" parent="Page/Tabs/Chat/VoiceBar"]
+[node name="StopVoice" type="Button" parent="Page/Tabs/Chat/VoiceBar" unique_id=1002079528]
 layout_mode = 2
 text = "■ STOP VOICE"
-
-[node name="MicrophoneInput" type="AudioStreamPlayer" parent="."]
-
-[node name="VoiceOutput" type="AudioStreamPlayer" parent="."]
 
 [node name="MemoryCore" type="VBoxContainer" parent="Page/Tabs" unique_id=402905561]
 visible = false
@@ -188,7 +182,7 @@ layout_mode = 2
 theme_override_constants/separation = 8
 metadata/_tab_index = 1
 
-[node name="TopPadding" type="Control" parent="Page/Tabs/MemoryCore"]
+[node name="TopPadding" type="Control" parent="Page/Tabs/MemoryCore" unique_id=517667211]
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
 
@@ -212,11 +206,11 @@ text = "SAVE MEMORY"
 layout_mode = 2
 text = "RELOAD FROM DISK"
 
-[node name="UndoMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions"]
+[node name="UndoMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions" unique_id=527448394]
 layout_mode = 2
 text = "↶ UNDO"
 
-[node name="RedoMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions"]
+[node name="RedoMemory" type="Button" parent="Page/Tabs/MemoryCore/MemoryActions" unique_id=1721171293]
 layout_mode = 2
 text = "↷ REDO"
 
@@ -226,11 +220,11 @@ layout_mode = 2
 theme_override_constants/separation = 8
 metadata/_tab_index = 2
 
-[node name="TopPadding" type="Control" parent="Page/Tabs/EngineSetup"]
+[node name="TopPadding" type="Control" parent="Page/Tabs/EngineSetup" unique_id=1681881884]
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
 
-[node name="SettingsScroll" type="ScrollContainer" parent="Page/Tabs/EngineSetup"]
+[node name="SettingsScroll" type="ScrollContainer" parent="Page/Tabs/EngineSetup" unique_id=948376469]
 custom_minimum_size = Vector2(0, 260)
 layout_mode = 2
 size_flags_vertical = 3
@@ -269,8 +263,8 @@ text = "BROWSE"
 
 [node name="MmprojLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1600137343]
 layout_mode = 2
-text = "PRIMARY MMPROJ (OPTIONAL)"
 tooltip_text = "Only for a matching vision-language model. Qwen2.5-Coder is text-only, so leave this empty."
+text = "PRIMARY MMPROJ (OPTIONAL)"
 
 [node name="MmprojPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=667374840]
 layout_mode = 2
@@ -281,29 +275,29 @@ placeholder_text = "Leave blank for Qwen Coder • requires a matching vision mo
 layout_mode = 2
 text = "BROWSE"
 
-[node name="VisionModelLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+[node name="VisionModelLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=640165835]
 layout_mode = 2
 text = "AUTO VISION MODEL"
 
-[node name="VisionModelPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+[node name="VisionModelPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1404917867]
 layout_mode = 2
 size_flags_horizontal = 3
 placeholder_text = "Optional smaller VLM used only for image messages"
 
-[node name="BrowseVisionModel" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+[node name="BrowseVisionModel" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=473642050]
 layout_mode = 2
 text = "BROWSE"
 
-[node name="VisionMmprojLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+[node name="VisionMmprojLabel" type="Label" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=1023633980]
 layout_mode = 2
 text = "VISION MMPROJ"
 
-[node name="VisionMmprojPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+[node name="VisionMmprojPath" type="LineEdit" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=918922425]
 layout_mode = 2
 size_flags_horizontal = 3
 placeholder_text = "Must exactly match the selected vision model"
 
-[node name="BrowseVisionMmproj" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings"]
+[node name="BrowseVisionMmproj" type="Button" parent="Page/Tabs/EngineSetup/SettingsScroll/Settings" unique_id=255679318]
 layout_mode = 2
 text = "BROWSE"
 
@@ -385,38 +379,38 @@ layout_mode = 2
 layout_mode = 2
 text = "Godot owns the interface; llama.cpp remains the private local CUDA engine. A vision model and MMPROJ must be an exact matching pair."
 
-[node name="AutoVisionSwitch" type="CheckButton" parent="Page/Tabs/EngineSetup"]
+[node name="AutoVisionSwitch" type="CheckButton" parent="Page/Tabs/EngineSetup" unique_id=564959784]
 layout_mode = 2
+tooltip_text = "Keeps the stronger coding/chat model active normally and loads the smaller vision pair only for image messages"
 button_pressed = true
 text = "AUTO-SWITCH TO VISION MODEL FOR IMAGES, THEN RESTORE PRIMARY MODEL"
-tooltip_text = "Keeps the stronger coding/chat model active normally and loads the smaller vision pair only for image messages"
 
-[node name="VoiceHeading" type="Label" parent="Page/Tabs/EngineSetup"]
+[node name="VoiceHeading" type="Label" parent="Page/Tabs/EngineSetup" unique_id=503589565]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.302, 0.933, 0.918, 1)
 theme_override_font_sizes/font_size = 18
 text = "VOICE + MICROPHONE"
 
-[node name="VoiceNote" type="Label" parent="Page/Tabs/EngineSetup"]
+[node name="VoiceNote" type="Label" parent="Page/Tabs/EngineSetup" unique_id=1788622491]
 layout_mode = 2
 text = "Privacy default: the microphone only listens after START TALKING is pressed. Transcripts stay in the composer until you manually send them."
 autowrap_mode = 2
 
-[node name="VoiceOptions" type="HBoxContainer" parent="Page/Tabs/EngineSetup"]
+[node name="VoiceOptions" type="HBoxContainer" parent="Page/Tabs/EngineSetup" unique_id=399868373]
 layout_mode = 2
 theme_override_constants/separation = 12
 
-[node name="AutoSpeak" type="CheckButton" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+[node name="AutoSpeak" type="CheckButton" parent="Page/Tabs/EngineSetup/VoiceOptions" unique_id=1990944385]
 layout_mode = 2
-text = "SAM SPEAKS REPLIES"
 tooltip_text = "Read Sam's prose responses aloud; fenced code is skipped"
+text = "SAM SPEAKS REPLIES"
 
-[node name="AutoSend" type="CheckButton" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+[node name="AutoSend" type="CheckButton" parent="Page/Tabs/EngineSetup/VoiceOptions" unique_id=1030005640]
 layout_mode = 2
-text = "AUTO-SEND MIC TRANSCRIPTS"
 tooltip_text = "When enabled, a finished voice transcript is sent immediately instead of waiting in the composer"
+text = "AUTO-SEND MIC TRANSCRIPTS"
 
-[node name="Voice" type="OptionButton" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+[node name="Voice" type="OptionButton" parent="Page/Tabs/EngineSetup/VoiceOptions" unique_id=1049422778]
 layout_mode = 2
 tooltip_text = "Choose the local Kokoro speaking voice"
 item_count = 4
@@ -429,11 +423,11 @@ popup/item_2/id = 2
 popup/item_3/text = "Michael"
 popup/item_3/id = 3
 
-[node name="TestVoice" type="Button" parent="Page/Tabs/EngineSetup/VoiceOptions"]
+[node name="TestVoice" type="Button" parent="Page/Tabs/EngineSetup/VoiceOptions" unique_id=451978471]
 layout_mode = 2
 text = "▶ TEST SELECTED VOICE"
 
-[node name="VoicePrivacy" type="Label" parent="Page/Tabs/EngineSetup"]
+[node name="VoicePrivacy" type="Label" parent="Page/Tabs/EngineSetup" unique_id=462915980]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5098, 0.5725, 0.6784, 1)
 text = "Microphone capture is push-to-talk, processed locally, and locked while Sam generates or speaks. Auto-send is off for new installations."
@@ -442,15 +436,15 @@ autowrap_mode = 2
 [node name="EngineActions" type="HBoxContainer" parent="Page/Tabs/EngineSetup" unique_id=2104715158]
 layout_mode = 2
 
-[node name="UseQwenCoder" type="Button" parent="Page/Tabs/EngineSetup/EngineActions"]
+[node name="UseQwenCoder" type="Button" parent="Page/Tabs/EngineSetup/EngineActions" unique_id=528334815]
 layout_mode = 2
-text = "USE QWEN 2.5 CODER 14B"
 tooltip_text = "Select the locally downloaded Qwen2.5-Coder-14B Q4_K_M model and recommended RTX 3060 settings"
+text = "USE QWEN 2.5 CODER 14B"
 
-[node name="UseQwenVision" type="Button" parent="Page/Tabs/EngineSetup/EngineActions"]
+[node name="UseQwenVision" type="Button" parent="Page/Tabs/EngineSetup/EngineActions" unique_id=656304649]
 layout_mode = 2
-text = "USE QWEN VISION 7B"
 tooltip_text = "Configure the downloaded Qwen2.5-VL-7B Q4_K_M and its matching F16 projector for automatic image analysis"
+text = "USE QWEN VISION 7B"
 
 [node name="SaveRestart" type="Button" parent="Page/Tabs/EngineSetup/EngineActions" unique_id=1497474763]
 layout_mode = 2
@@ -464,10 +458,10 @@ text = "STOP ENGINE"
 layout_mode = 2
 text = "APPLY BACKGROUND"
 
-[node name="SetupCheck" type="Button" parent="Page/Tabs/EngineSetup/EngineActions"]
+[node name="SetupCheck" type="Button" parent="Page/Tabs/EngineSetup/EngineActions" unique_id=858424447]
 layout_mode = 2
-text = "SETUP CHECK"
 tooltip_text = "Reopen first-run checks for the model, engine, CUDA, Windows runtime, and voice package"
+text = "SETUP CHECK"
 
 [node name="DebugTelemetry" type="VBoxContainer" parent="Page/Tabs" unique_id=1375960525]
 visible = false
@@ -475,7 +469,7 @@ layout_mode = 2
 theme_override_constants/separation = 8
 metadata/_tab_index = 3
 
-[node name="TopPadding" type="Control" parent="Page/Tabs/DebugTelemetry"]
+[node name="TopPadding" type="Control" parent="Page/Tabs/DebugTelemetry" unique_id=113606155]
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
 
@@ -491,47 +485,51 @@ selection_enabled = true
 layout_mode = 2
 text = "CLEAR LOG"
 
-[node name="CopyLog" type="Button" parent="Page/Tabs/DebugTelemetry"]
+[node name="CopyLog" type="Button" parent="Page/Tabs/DebugTelemetry" unique_id=664333314]
 layout_mode = 2
 text = "COPY LOG"
 
-[node name="SystemSpecs" type="VBoxContainer" parent="Page/Tabs"]
+[node name="SystemSpecs" type="VBoxContainer" parent="Page/Tabs" unique_id=929961364]
 visible = false
 layout_mode = 2
 theme_override_constants/separation = 10
 metadata/_tab_index = 4
 
-[node name="TopPadding" type="Control" parent="Page/Tabs/SystemSpecs"]
+[node name="TopPadding" type="Control" parent="Page/Tabs/SystemSpecs" unique_id=1715290320]
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
 
-[node name="Header" type="HBoxContainer" parent="Page/Tabs/SystemSpecs"]
+[node name="Header" type="HBoxContainer" parent="Page/Tabs/SystemSpecs" unique_id=933332116]
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="Title" type="Label" parent="Page/Tabs/SystemSpecs/Header"]
+[node name="Title" type="Label" parent="Page/Tabs/SystemSpecs/Header" unique_id=726119538]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_font_sizes/font_size = 22
 text = "SYSTEM COMPATIBILITY LAB"
 
-[node name="Refresh" type="Button" parent="Page/Tabs/SystemSpecs/Header"]
+[node name="Refresh" type="Button" parent="Page/Tabs/SystemSpecs/Header" unique_id=89650981]
 layout_mode = 2
 text = "↻ REFRESH SPECS"
 
-[node name="AskSam" type="Button" parent="Page/Tabs/SystemSpecs/Header"]
+[node name="AskSam" type="Button" parent="Page/Tabs/SystemSpecs/Header" unique_id=971094203]
 layout_mode = 2
 text = "✦ ASK SAM ABOUT THIS"
 
-[node name="Report" type="RichTextLabel" parent="Page/Tabs/SystemSpecs"]
+[node name="Report" type="RichTextLabel" parent="Page/Tabs/SystemSpecs" unique_id=1843000162]
 layout_mode = 2
 size_flags_vertical = 3
 focus_mode = 2
 bbcode_enabled = true
-selection_enabled = true
 text = "Scanning hardware…"
+selection_enabled = true
 
-[node name="Toast" type="Label" parent="."]
+[node name="MicrophoneInput" type="AudioStreamPlayer" parent="." unique_id=354859952]
+
+[node name="VoiceOutput" type="AudioStreamPlayer" parent="." unique_id=426542464]
+
+[node name="Toast" type="Label" parent="." unique_id=1296459249]
 visible = false
 layout_mode = 1
 anchors_preset = 10
@@ -550,7 +548,7 @@ text = "✓ Saved"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="FirstRunSetup" type="ColorRect" parent="."]
+[node name="FirstRunSetup" type="ColorRect" parent="." unique_id=1959406807]
 visible = false
 z_index = 50
 layout_mode = 1
@@ -561,7 +559,7 @@ grow_horizontal = 2
 grow_vertical = 2
 color = Color(0.015, 0.027, 0.055, 0.97)
 
-[node name="Center" type="CenterContainer" parent="FirstRunSetup"]
+[node name="Center" type="CenterContainer" parent="FirstRunSetup" unique_id=275593507]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -569,93 +567,94 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="Panel" type="PanelContainer" parent="FirstRunSetup/Center"]
+[node name="Panel" type="PanelContainer" parent="FirstRunSetup/Center" unique_id=1456308711]
 custom_minimum_size = Vector2(780, 570)
 layout_mode = 2
 
-[node name="Margin" type="MarginContainer" parent="FirstRunSetup/Center/Panel"]
+[node name="Margin" type="MarginContainer" parent="FirstRunSetup/Center/Panel" unique_id=690981670]
 layout_mode = 2
 theme_override_constants/margin_left = 32
 theme_override_constants/margin_top = 28
 theme_override_constants/margin_right = 32
 theme_override_constants/margin_bottom = 28
 
-[node name="Content" type="VBoxContainer" parent="FirstRunSetup/Center/Panel/Margin"]
+[node name="Content" type="VBoxContainer" parent="FirstRunSetup/Center/Panel/Margin" unique_id=386909093]
 layout_mode = 2
 theme_override_constants/separation = 14
 
-[node name="TitleRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="TitleRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=1028833882]
 layout_mode = 2
 
-[node name="Title" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content/TitleRow"]
+[node name="Title" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content/TitleRow" unique_id=408179872]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.302, 0.933, 0.918, 1)
 theme_override_font_sizes/font_size = 28
 text = "WELCOME TO SAM-AI"
 
-[node name="SetupLater" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/TitleRow"]
+[node name="SetupLater" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/TitleRow" unique_id=283815173]
 custom_minimum_size = Vector2(46, 42)
 layout_mode = 2
 tooltip_text = "Close this wizard and open the Modules tab. Setup will remain incomplete."
 text = "✕"
 
-[node name="Intro" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="Intro" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=1677334872]
 layout_mode = 2
 text = "SAM-AI runs privately on this computer. Before the first launch, select a GGUF language model and the llama.cpp Windows engine. The setup check will verify required local components."
 autowrap_mode = 2
 
-[node name="ModelLabel" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="ModelLabel" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=1834536616]
 layout_mode = 2
 text = "1  LANGUAGE MODEL (.GGUF)"
 
-[node name="ModelRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="ModelRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=1653436084]
 layout_mode = 2
 
-[node name="ModelPath" type="LineEdit" parent="FirstRunSetup/Center/Panel/Margin/Content/ModelRow"]
+[node name="ModelPath" type="LineEdit" parent="FirstRunSetup/Center/Panel/Margin/Content/ModelRow" unique_id=1413485231]
 layout_mode = 2
 size_flags_horizontal = 3
 placeholder_text = "Choose a downloaded GGUF model"
 
-[node name="BrowseModel" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/ModelRow"]
+[node name="BrowseModel" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/ModelRow" unique_id=1467170818]
 layout_mode = 2
 text = "BROWSE MODEL"
 
-[node name="ServerLabel" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="ServerLabel" type="Label" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=1140995549]
 layout_mode = 2
 text = "2  LLAMA.CPP WINDOWS ENGINE"
 
-[node name="ServerRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="ServerRow" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=311123707]
 layout_mode = 2
 
-[node name="ServerPath" type="LineEdit" parent="FirstRunSetup/Center/Panel/Margin/Content/ServerRow"]
+[node name="ServerPath" type="LineEdit" parent="FirstRunSetup/Center/Panel/Margin/Content/ServerRow" unique_id=829801757]
 layout_mode = 2
 size_flags_horizontal = 3
 placeholder_text = "Choose llama-server.exe"
 
-[node name="BrowseServer" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/ServerRow"]
+[node name="BrowseServer" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/ServerRow" unique_id=1529578732]
 layout_mode = 2
 text = "BROWSE ENGINE"
 
-[node name="Checks" type="RichTextLabel" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="Checks" type="RichTextLabel" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=1988014174]
 custom_minimum_size = Vector2(0, 170)
 layout_mode = 2
+focus_mode = 2
 bbcode_enabled = true
 selection_enabled = true
 
-[node name="Actions" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content"]
+[node name="Actions" type="HBoxContainer" parent="FirstRunSetup/Center/Panel/Margin/Content" unique_id=774356835]
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="CheckAgain" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions"]
+[node name="CheckAgain" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions" unique_id=1860195358]
 layout_mode = 2
 text = "CHECK COMPONENTS"
 
-[node name="WindowsRuntime" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions"]
+[node name="WindowsRuntime" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions" unique_id=67865211]
 layout_mode = 2
 text = "GET WINDOWS RUNTIME"
 
-[node name="Complete" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions"]
+[node name="Complete" type="Button" parent="FirstRunSetup/Center/Panel/Margin/Content/Actions" unique_id=861786688]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "COMPLETE SETUP + START SAM"

@@ -1,7 +1,15 @@
-# SAM-AI v1.0.2
+# SAM-AI v1.0.3
 
 SAM-AI is a private, local and offline desktop AI interface created by Steadyforge
 of Astroblitz Creations and Makazhan.
+
+## What's new
+
+- Added local WAN 2.2 image and video generation workflows.
+- Added live voice capture improvements and ESP32 bridge support.
+- Added local spell checking with suggestions and a personal dictionary.
+- Improved automatic context sizing, recovery, message queuing, and memory tools.
+- Expanded image editing, security checks, and local helper tooling.
 
 ## Install
 

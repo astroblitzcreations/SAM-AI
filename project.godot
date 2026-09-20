@@ -11,18 +11,17 @@ config_version=5
 [application]
 
 config/name="SAM-AI"
-config/version="1.0.2"
+config/version="1.0.3"
 run/main_scene="res://sam_ai_startup/SAMBoot.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
-config/icon="res://icon.svg"
-boot_splash/image="res://sam_ai_startup/media/sam_ai_startup_poster.png"
 boot_splash/bg_color=Color(0.008, 0.022, 0.037, 1)
-boot_splash/fullsize=true
-boot_splash/use_filter=true
+boot_splash/image="res://sam_ai_startup/media/sam_ai_startup_poster.png"
+config/icon="res://icon.svg"
 
 [audio]
 
 driver/enable_input=true
+enable_audio_input=true
 
 [display]
 

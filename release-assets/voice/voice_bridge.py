@@ -20,7 +20,12 @@ def synthesize(text_file: Path, output: Path, voice: str, speed: float, model: P
 def transcribe(audio: Path, output: Path, executable: Path, model: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     prefix = output.with_suffix("")
-    command = [str(executable), "-m", str(model), "-f", str(audio), "-otxt", "-of", str(prefix), "-nt", "-np"]
+    command = [
+        str(executable), "-m", str(model), "-f", str(audio),
+        "-otxt", "-of", str(prefix), "-nt", "-np", "-l", "en", "-sns",
+        "-nth", "0.45", "-et", "2.0", "-lpt", "-0.7",
+        "--prompt", "Clear conversational English speech. Transcribe only words actually spoken by a person.",
+    ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     generated = prefix.with_suffix(".txt")
     if result.returncode != 0 or not generated.exists():
