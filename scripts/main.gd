@@ -500,6 +500,7 @@ var security_guard_label: Label
 var security_selected_pid := -1
 var security_selected_name := ""
 var security_selected_path := ""
+var security_selected_connection: Dictionary = {}
 var security_blocked_rules := 0
 var network_guard_button: Button
 var network_guard_header_button: Button
@@ -507,6 +508,9 @@ var slow_inference_notice_shown := false
 var security_startup_tree: Tree
 var security_services_tree: Tree
 var security_rules_tree: Tree
+var security_policies_tree: Tree
+var security_policy_details: RichTextLabel
+var security_selected_policy: Dictionary = {}
 var security_context_menu: PopupMenu
 var security_processes: Array = []
 var security_connections: Array = []
@@ -11245,7 +11249,60 @@ func setup_security_center() -> void:
 	footer.add_child(make_button("📂 OPEN REPORT FOLDER", open_security_report_folder, colors.muted))
 	apply_theme_recursive(page)
 	setup_security_context_menu()
+	setup_security_policy_tab()
 	refresh_security_snapshot.call_deferred()
+
+func setup_security_policy_tab() -> void:
+	var tabs: TabContainer = $Page/Tabs
+	if tabs.has_node("Guard Policies"):
+		return
+	var page := VBoxContainer.new()
+	page.name = "Guard Policies"
+	page.add_theme_constant_override("separation", 10)
+	tabs.add_child(page)
+	var security_tab := tabs.get_node_or_null("Security Center")
+	if security_tab != null:
+		tabs.move_child(page, security_tab.get_index() + 1)
+	var header := HBoxContainer.new()
+	page.add_child(header)
+	var title := Label.new()
+	title.text = "SAM NETWORK GUARD POLICIES  //  REMEMBERED ALLOW + BLOCK DECISIONS"
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.add_theme_font_size_override("font_size", 21)
+	title.add_theme_color_override("font_color", colors.cyan)
+	header.add_child(title)
+	header.add_child(make_button("↻ REFRESH", refresh_security_snapshot, colors.green))
+	header.add_child(make_button("OPEN WINDOWS FIREWALL", func(): OS.shell_open("wf.msc"), colors.cyan))
+	var hint := Label.new()
+	hint.text = "One row represents an app's paired inbound/outbound SAM rules. Right-click a row for research, file, policy, enable/disable, and removal actions. Windows-owned rules remain in Security Center."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", colors.muted)
+	page.add_child(hint)
+	security_policies_tree = Tree.new()
+	security_policies_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	security_policies_tree.columns = 6
+	security_policies_tree.column_titles_visible = true
+	for column in range(6):
+		security_policies_tree.set_column_title(column, ["APPLICATION", "DECISION", "ENABLED", "DIRECTIONS", "PROFILE", "EXECUTABLE"][column])
+	security_policies_tree.hide_root = true
+	security_policies_tree.item_selected.connect(select_security_policy)
+	security_policies_tree.item_activated.connect(show_selected_policy_details)
+	security_policies_tree.gui_input.connect(_on_security_policy_gui_input)
+	page.add_child(security_policies_tree)
+	var actions := HBoxContainer.new()
+	page.add_child(actions)
+	actions.add_child(make_button("ALLOW APP", func(): change_selected_policy("allow"), colors.green))
+	actions.add_child(make_button("BLOCK APP", func(): change_selected_policy("block"), colors.red))
+	actions.add_child(make_button("REMOVE POLICY", remove_selected_policy, colors.amber))
+	actions.add_child(make_button("ASK SAM", ask_sam_about_policy, colors.cyan))
+	actions.add_child(make_button("SEARCH ONLINE", search_selected_policy, colors.cyan))
+	security_policy_details = RichTextLabel.new()
+	security_policy_details.bbcode_enabled = true
+	security_policy_details.selection_enabled = true
+	security_policy_details.custom_minimum_size.y = 150
+	security_policy_details.text = "Select a remembered application policy to see its exact rules."
+	page.add_child(security_policy_details)
+	apply_theme_recursive(page)
 
 func refresh_network_guard_ui() -> void:
 	if not is_instance_valid(security_guard_label):
@@ -11304,6 +11361,7 @@ func poll_security_snapshot() -> void:
 	populate_security_startup(security_startup_items)
 	populate_security_services(security_services)
 	populate_security_rules(security_rules)
+	populate_security_policies(security_rules)
 	refresh_network_guard_ui()
 	if bool(snapshot.get("verified", false)):
 		show_toast("Publisher and Authenticode signature check complete")
@@ -11367,6 +11425,101 @@ func populate_security_rules(items: Array) -> void:
 			item.set_text(6, "SAM" if bool(value.get("sam_owned", false)) else "WINDOWS / APP")
 			item.set_metadata(0, value)
 
+func populate_security_policies(items: Array) -> void:
+	if not is_instance_valid(security_policies_tree):
+		return
+	var grouped: Dictionary = {}
+	for value in items:
+		if not value is Dictionary or not bool(value.get("sam_owned", false)):
+			continue
+		var name := str(value.get("name", ""))
+		if name.contains("EMERGENCY LOCKDOWN"):
+			continue
+		var path := str(value.get("program", ""))
+		var app_name := name.trim_prefix("SAM Network Guard - ").trim_suffix(" - IN").trim_suffix(" - OUT")
+		var key := path if not path.is_empty() else app_name
+		if not grouped.has(key):
+			grouped[key] = {"name":app_name, "path":path, "action":str(value.get("action", "Unknown")), "enabled":true, "profile":str(value.get("profile", "Any")), "directions":[], "rules":[]}
+		var policy: Dictionary = grouped[key]
+		policy.directions.append(str(value.get("direction", "")))
+		policy.rules.append(name)
+		if str(value.get("enabled", "True")) != "True": policy.enabled = false
+	security_policies_tree.clear()
+	var root := security_policies_tree.create_item()
+	for key in grouped:
+		var policy: Dictionary = grouped[key]
+		var item := security_policies_tree.create_item(root)
+		item.set_text(0, str(policy.name))
+		item.set_text(1, str(policy.action).to_upper())
+		item.set_text(2, "YES" if bool(policy.enabled) else "NO")
+		item.set_text(3, " + ".join(PackedStringArray(policy.directions)))
+		item.set_text(4, str(policy.profile))
+		item.set_text(5, str(policy.path))
+		item.set_metadata(0, policy)
+
+func select_security_policy() -> void:
+	var item := security_policies_tree.get_selected()
+	if item == null or not item.get_metadata(0) is Dictionary:
+		return
+	security_selected_policy = item.get_metadata(0)
+	security_selected_name = str(security_selected_policy.get("name", ""))
+	security_selected_path = str(security_selected_policy.get("path", ""))
+	security_selected_pid = -1
+	security_policy_details.clear()
+	security_policy_details.append_text("[font_size=19][color=#4deeea]%s[/color][/font_size]\nDecision: [b]%s[/b] • enabled: %s • profile: %s\nExecutable: %s\nUnderlying rules:\n• %s" % [escape_bbcode(security_selected_name), escape_bbcode(str(security_selected_policy.get("action", "Unknown"))), "YES" if bool(security_selected_policy.get("enabled", false)) else "NO", escape_bbcode(str(security_selected_policy.get("profile", "Any"))), escape_bbcode(security_selected_path), "\n• ".join(PackedStringArray(security_selected_policy.get("rules", [])))])
+
+func _on_security_policy_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		var item := security_policies_tree.get_item_at_position(event.position)
+		if item != null:
+			item.select(0); select_security_policy(); show_policy_context_menu(); security_policies_tree.accept_event()
+
+func show_policy_context_menu() -> void:
+	if security_selected_policy.is_empty(): return
+	var menu := PopupMenu.new()
+	for entry in [["View policy details",1],["Ask SAM",2],["Search online",3],["Copy executable path",4],["Open file location",5],["Allow app",6],["Block app",7],["Enable policy",8],["Disable policy",9],["Remove policy",10]]:
+		menu.add_item(entry[0], entry[1])
+	menu.id_pressed.connect(func(id: int): handle_policy_context_action(id); menu.queue_free())
+	menu.popup_hide.connect(menu.queue_free)
+	add_child(menu); apply_theme_recursive(menu); style_security_popup_menu(menu); menu.position = Vector2i(get_viewport().get_mouse_position()); menu.popup()
+
+func handle_policy_context_action(id: int) -> void:
+	match id:
+		1: show_selected_policy_details()
+		2: ask_sam_about_policy()
+		3: search_selected_policy()
+		4: DisplayServer.clipboard_set(security_selected_path); show_toast("Policy executable path copied")
+		5:
+			if FileAccess.file_exists(security_selected_path): OS.shell_open(security_selected_path.get_base_dir())
+		6: change_selected_policy("allow")
+		7: change_selected_policy("block")
+		8: run_firewall_admin_action("policy_enable", security_selected_name, security_selected_path)
+		9: run_firewall_admin_action("policy_disable", security_selected_name, security_selected_path)
+		10: remove_selected_policy()
+
+func show_selected_policy_details() -> void:
+	select_security_policy()
+	show_toast("Policy details shown below the table")
+
+func change_selected_policy(action: String) -> void:
+	if security_selected_path.is_empty(): show_toast("Select an application policy first"); return
+	run_firewall_admin_action(action, security_selected_name, security_selected_path)
+
+func remove_selected_policy() -> void:
+	if security_selected_path.is_empty(): show_toast("Select an application policy first"); return
+	run_firewall_admin_action("policy_remove", security_selected_name, security_selected_path)
+
+func ask_sam_about_policy() -> void:
+	if security_selected_policy.is_empty(): show_toast("Select an application policy first"); return
+	$Page/Tabs.current_tab = 0
+	input_box.text = "Explain this SAM Network Guard application policy, what the executable normally does, and the security tradeoffs of allowing versus blocking it. Do not label it malicious without evidence.\n\nApp: %s\nExecutable: %s\nCurrent decision: %s\nEnabled: %s" % [security_selected_name, security_selected_path, security_selected_policy.get("action", "Unknown"), security_selected_policy.get("enabled", false)]
+	input_box.grab_focus()
+
+func search_selected_policy() -> void:
+	if security_selected_policy.is_empty(): show_toast("Select an application policy first"); return
+	var terms := "%s Windows process network firewall" % (security_selected_path.get_file() if not security_selected_path.is_empty() else security_selected_name)
+	open_web_url("https://www.google.com/search?q=" + terms.uri_encode(), "Research this remembered application policy")
+
 func sort_security_processes(column: int, _button: int) -> void:
 	if security_process_sort_column == column:
 		security_process_sort_ascending = not security_process_sort_ascending
@@ -11409,6 +11562,7 @@ func _on_security_process_gui_input(event: InputEvent) -> void:
 		if item != null:
 			item.select(0)
 			select_security_process()
+			security_selected_connection = {}
 			show_security_context_menu(true)
 			security_process_tree.accept_event()
 
@@ -11421,6 +11575,7 @@ func _on_security_connection_gui_input(event: InputEvent) -> void:
 			security_selected_pid = int(value.get("pid", -1))
 			security_selected_name = str(value.get("name", ""))
 			security_selected_path = str(value.get("path", ""))
+			security_selected_connection = value
 			show_security_context_menu(false)
 			security_connection_tree.accept_event()
 
@@ -11443,9 +11598,11 @@ func setup_security_context_menu() -> void:
 	add_child(security_context_menu)
 	style_security_popup_menu(security_context_menu)
 
-func show_security_context_menu(_from_process: bool) -> void:
+func show_security_context_menu(from_process: bool) -> void:
 	if security_selected_pid < 0:
 		return
+	var search_index := security_context_menu.get_item_index(3)
+	security_context_menu.set_item_text(search_index, "Search app online" if from_process else "Investigate remote IP + app")
 	security_context_menu.position = Vector2i(get_viewport().get_mouse_position())
 	security_context_menu.popup()
 
@@ -11453,7 +11610,9 @@ func handle_security_context_action(id: int) -> void:
 	match id:
 		1: show_selected_process_details()
 		2: explain_selected_process()
-		3: search_selected_process()
+		3:
+			if security_selected_connection.is_empty(): search_selected_process()
+			else: show_network_research_options(security_selected_connection)
 		4: request_process_firewall_change(true)
 		5: request_process_firewall_change(false)
 		6: DisplayServer.clipboard_set("%s • PID %d" % [security_selected_name, security_selected_pid]); show_toast("Process name and PID copied")
@@ -11552,13 +11711,19 @@ func show_next_security_alert() -> void:
 	dialog.ok_button_text = "ALLOW ONCE"
 	dialog.add_button("REMEMBER ALLOW", true, "allow")
 	dialog.add_button("BLOCK APP", true, "block")
-	dialog.add_button("SEARCH", true, "search")
+	dialog.add_button("IP LOOKUP", true, "ip")
+	dialog.add_button("SEARCH APP + IP", true, "search")
+	dialog.add_button("ASK SAM", true, "sam")
+	dialog.add_button("COPY DETAILS", true, "copy")
 	dialog.custom_action.connect(func(action: StringName):
 		var app_name := str(connection.get("name", "unknown"))
 		var app_path := str(connection.get("path", ""))
 		if action == &"allow" and FileAccess.file_exists(app_path): run_firewall_admin_action("allow", app_name, app_path)
 		elif action == &"block" and FileAccess.file_exists(app_path): run_firewall_admin_action("block", app_name, app_path)
-		elif action == &"search": open_web_url("https://www.google.com/search?q=" + app_name.uri_encode() + "+Windows+process", "Research the app behind this network activity")
+		elif action == &"ip": search_connection_ip(connection)
+		elif action == &"search": search_connection_app(connection)
+		elif action == &"sam": ask_sam_about_connection(connection)
+		elif action == &"copy": DisplayServer.clipboard_set(connection_details_text(connection)); show_toast("Network details copied")
 		dialog.hide())
 	dialog.visibility_changed.connect(func():
 		if not dialog.visible:
@@ -11608,11 +11773,57 @@ func explain_selected_process() -> void:
 	show_toast("Process details placed in chat • transmit when ready")
 
 func search_selected_process() -> void:
-	if security_selected_name.is_empty():
+	if security_selected_name.is_empty() or security_selected_name.to_lower() == "unknown":
+		if not security_selected_connection.is_empty():
+			search_connection_ip(security_selected_connection)
+			return
 		show_toast("Select a running application first")
 		return
 	var query := security_selected_name.uri_encode()
 	open_web_url("https://www.google.com/search?q=" + query + "+Windows+process", "Search the web for public information about the selected process")
+
+func connection_details_text(connection: Dictionary) -> String:
+	return "App: %s\nPID: %d\nState: %s\nDirection: %s\nLocal: %s\nRemote: %s\nExecutable: %s" % [str(connection.get("name", "unknown")), int(connection.get("pid", 0)), str(connection.get("state", "")), str(connection.get("direction", "")), str(connection.get("local", "")), str(connection.get("remote", "")), str(connection.get("path", "Unavailable"))]
+
+func search_connection_ip(connection: Dictionary) -> void:
+	var ip := str(connection.get("remote_address", ""))
+	if ip.is_empty() or ip in ["0.0.0.0", "::"]:
+		show_toast("This is a listening socket without a remote IP yet")
+		return
+	open_web_url("https://ipinfo.io/" + ip.uri_encode(), "Look up the remote IP owner, network, hostname, and region")
+
+func search_connection_app(connection: Dictionary) -> void:
+	var app_name := str(connection.get("name", "unknown"))
+	var ip := str(connection.get("remote_address", ""))
+	var path := str(connection.get("path", ""))
+	var terms := (path.get_file() if not path.is_empty() else app_name) + " Windows process " + ip + " network connection"
+	open_web_url("https://www.google.com/search?q=" + terms.uri_encode(), "Search for the app and remote endpoint together")
+
+func ask_sam_about_connection(connection: Dictionary) -> void:
+	$Page/Tabs.current_tab = 0
+	input_box.text = "Analyze this observed Windows network activity cautiously. Explain the process, connection state, port, local versus remote endpoint, likely reasons for the traffic, and specific verification steps. Do not claim the IP or app is malicious without evidence. If current IP ownership or reputation is needed, tell me to use the IP LOOKUP action.\n\n" + connection_details_text(connection)
+	input_box.grab_focus()
+	show_toast("Complete network context placed in chat • transmit when ready")
+
+func show_network_research_options(connection: Dictionary) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "INVESTIGATE NETWORK ACTIVITY"
+	dialog.dialog_text = connection_details_text(connection) + "\n\nChoose an investigation source. IP LOOKUP is best when the owning process is unknown."
+	dialog.ok_button_text = "CLOSE"
+	dialog.add_button("IP LOOKUP", true, "ip")
+	dialog.add_button("SEARCH APP + IP", true, "app")
+	dialog.add_button("ASK SAM", true, "sam")
+	dialog.add_button("COPY DETAILS", true, "copy")
+	dialog.custom_action.connect(func(action: StringName):
+		if action == &"ip": search_connection_ip(connection)
+		elif action == &"app": search_connection_app(connection)
+		elif action == &"sam": ask_sam_about_connection(connection)
+		elif action == &"copy": DisplayServer.clipboard_set(connection_details_text(connection)); show_toast("Network details copied"))
+	var close_dialog := func():
+		if is_instance_valid(dialog) and not dialog.is_queued_for_deletion(): dialog.hide(); dialog.queue_free()
+	dialog.get_ok_button().pressed.connect(close_dialog)
+	dialog.close_requested.connect(close_dialog)
+	add_child(dialog); apply_theme_recursive(dialog); style_security_dialog(dialog, colors.cyan); dialog.popup_centered(Vector2i(820, 500))
 
 func request_end_selected_process(force: bool) -> void:
 	if security_selected_pid <= 4:
@@ -11858,7 +12069,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.1 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.2 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):

@@ -1,4 +1,16 @@
-# SAM-AI v1.2.1
+# SAM-AI v1.2.2
+
+## Fixed in v1.2.2
+
+- Unknown network owners now default to investigating the actual remote IP instead of searching for “unknown Windows process.”
+- Connection alerts offer IP Lookup, Search App + IP, Ask SAM, and Copy Details alongside allow/block decisions.
+- Connection right-click research retains the selected remote address, ports, state, direction, PID, executable, and local endpoint.
+- IP Lookup opens the exact address on IPinfo; combined search includes the executable name and remote IP.
+- Ask SAM receives the complete observed connection context and clearly distinguishes local analysis from current online IP ownership/reputation.
+- A dedicated Guard Policies tab groups paired inbound/outbound rules into clear per-app Allowed or Blocked decisions.
+- Policy rows support right-click research, Ask SAM, copy/open path, Allow, Block, enable, disable, and removal actions.
+
+## Fixed in v1.2.1
 
 ## Fixed in v1.2.1
 
