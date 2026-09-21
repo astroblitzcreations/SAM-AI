@@ -4,11 +4,12 @@ extends Control
 var _progress := 0.0
 var stalled_timer := 0.0
 var state_timer := 0.0
-var cat_state := "building"
+var cat_state := "fetching"
 var cat_dir := 1.0
 var cat_target_x := 0.42
 var cat_is_moving := true
 var built_stage := 0
+var pending_stage := 0
 var storm_active := false
 var lightning_timer := 0.0
 var cat_root: Node3D
@@ -18,6 +19,7 @@ var smoke: GPUParticles3D
 var rain: GPUParticles3D
 var steam: GPUParticles3D
 var lightning: OmniLight3D
+var cargo: MeshInstance3D
 var progress_label: Label
 var state_label: Label
 var text_column: VBoxContainer
@@ -82,7 +84,7 @@ func build_scene() -> void:
 		push_warning("Builder cat model could not be loaded; compact monitor will continue without the 3D cat.")
 		return
 	cat_root = cat_scene.instantiate() as Node3D
-	cat_root.position = Vector3(-0.85, 0.08, 0.15)
+	cat_root.position = Vector3(-0.80, 0.08, 0.15)
 	cat_root.scale = Vector3.ONE * 2.15
 	cat_root.rotation_degrees = Vector3(0, 90, 0)
 	world.add_child(cat_root)
@@ -92,21 +94,25 @@ func build_scene() -> void:
 func build_ground_and_house(world: Node3D) -> void:
 	add_box(world, Vector3(0, -0.02, 0), Vector3(4.8, 0.07, 1.15), Color("#18323b"))
 	var stages := [
-		[Vector3(1.22, 0.20, 0), Vector3(0.65, 0.40, 0.62), Color("#895a39"), 0.0],
-		[Vector3(1.22, 0.58, 0), Vector3(0.65, 0.35, 0.62), Color("#a66f45"), 0.0],
-		[Vector3(1.04, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), 24.0],
-		[Vector3(1.40, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), -24.0]
+		[Vector3(-1.18, 0.20, 0), Vector3(0.65, 0.40, 0.62), Color("#895a39"), 0.0],
+		[Vector3(-1.18, 0.58, 0), Vector3(0.65, 0.35, 0.62), Color("#a66f45"), 0.0],
+		[Vector3(-1.36, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), 24.0],
+		[Vector3(-1.00, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), -24.0]
 	]
 	for data in stages:
 		var part := add_box(world, data[0], data[1], data[2])
 		part.rotation_degrees.z = data[3]
 		part.visible = false
 		house_stages.append(part)
-	var door := add_box(world, Vector3(1.22, 0.17, 0.325), Vector3(0.20, 0.31, 0.04), Color("#1b1114"))
+	var door := add_box(world, Vector3(-1.18, 0.17, 0.325), Vector3(0.20, 0.31, 0.04), Color("#1b1114"))
 	var door_mat := door.material_override as StandardMaterial3D
 	door_mat.emission_enabled = true
 	door_mat.emission = Color("#ffb84d")
 	door_mat.emission_energy_multiplier = 1.6
+	# Supply depot on the right. The cat visibly carries this block to the house.
+	add_box(world, Vector3(1.15, 0.10, 0), Vector3(0.34, 0.20, 0.34), Color("#c69755"))
+	cargo = add_box(world, Vector3(1.15, 0.24, 0.18), Vector3(0.15, 0.12, 0.15), Color("#ffd06a"))
+	cargo.visible = false
 
 func add_box(parent: Node3D, position: Vector3, box_size: Vector3, color: Color) -> MeshInstance3D:
 	var part := MeshInstance3D.new()
@@ -120,8 +126,9 @@ func add_box(parent: Node3D, position: Vector3, box_size: Vector3, color: Color)
 
 func build_particles(world: Node3D) -> void:
 	smoke = make_particles(Color(0.72, 0.78, 0.82, 0.60), 22, 0.85, 0.055)
-	smoke.position = Vector3(0.65, 0.30, 0.2)
+	smoke.position = Vector3(-1.05, 0.38, 0.2)
 	smoke.one_shot = true
+	smoke.explosiveness = 0.92
 	world.add_child(smoke)
 	rain = make_particles(Color(0.35, 0.68, 1.0, 0.70), 80, 1.1, 0.018)
 	var rain_process := rain.process_material as ParticleProcessMaterial
@@ -151,7 +158,13 @@ func make_particles(color: Color, amount: int, lifetime: float, particle_size: f
 	particles.process_material = process
 	var quad := QuadMesh.new()
 	quad.size = Vector2(particle_size, particle_size)
-	quad.material = material(color)
+	var particle_material := material(color)
+	particle_material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	particle_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	particle_material.emission_enabled = true
+	particle_material.emission = color
+	particle_material.emission_energy_multiplier = 1.25
+	quad.material = particle_material
 	particles.draw_pass_1 = quad
 	return particles
 
@@ -180,13 +193,14 @@ func set_progress(value: float) -> void:
 	_progress = next
 	var new_stage := mini(4, int(ceil(_progress / 25.0)))
 	if new_stage > built_stage:
-		built_stage = new_stage
-		if is_instance_valid(smoke): smoke.restart()
-	for index in range(house_stages.size()): house_stages[index].visible = index < new_stage
+		pending_stage = new_stage
+		if cat_state not in ["fetching", "carrying"]:
+			set_state("fetching")
+	for index in range(house_stages.size()): house_stages[index].visible = index < built_stage
 	if not is_instance_valid(rain) or not is_instance_valid(cat_root):
 		update_text()
 		return
-	set_storm(_progress >= 52.0 and _progress < 82.0)
+	set_storm(_progress >= 66.0 and _progress < 78.0)
 	if _progress >= 100.0: set_state("celebrate")
 	update_text()
 
@@ -201,22 +215,39 @@ func _process(delta: float) -> void:
 			lightning.light_energy = 7.5
 			lightning_timer = 3.2
 			set_state("scared")
-	elif state_timer > 4.2 and _progress < 100.0:
-		set_state("coffee" if stalled_timer > 7.0 else ("walking" if cat_state == "building" else "building"))
+	elif state_timer > 4.2 and _progress < 100.0 and pending_stage <= built_stage:
+		set_state("coffee" if stalled_timer > 8.0 else "fetching")
 	match cat_state:
+		"fetching":
+			cat_is_moving = true
+			cat_dir = 1.0
+			cat_root.position.x = move_toward(cat_root.position.x, 1.02, delta * 0.78)
+			if cat_root.position.x >= 0.99:
+				cargo.visible = true
+				set_state("carrying")
+		"carrying":
+			cat_is_moving = true
+			cat_dir = -1.0
+			cat_root.position.x = move_toward(cat_root.position.x, -0.83, delta * 0.62)
+			cargo.position = cat_root.position + Vector3(-0.02, 0.28, 0.03)
+			if cat_root.position.x <= -0.80:
+				cargo.visible = false
+				built_stage = mini(pending_stage, built_stage + 1)
+				for index in range(house_stages.size()): house_stages[index].visible = index < built_stage
+				if is_instance_valid(smoke):
+					smoke.restart()
+					smoke.emitting = true
+				set_state("building")
 		"building":
 			cat_is_moving = false
-		"walking":
-			cat_is_moving = true
-			cat_root.position.x = move_toward(cat_root.position.x, cat_target_x, delta * 0.72)
-			if absf(cat_root.position.x - cat_target_x) < 0.025:
-				cat_target_x = -0.78 if cat_target_x > 0.0 else 0.42
-				cat_dir = -1.0 if cat_target_x < cat_root.position.x else 1.0
+			if state_timer > 1.4:
+				set_state("fetching")
 		"running", "scared":
-			cat_root.position.x = move_toward(cat_root.position.x, 1.18, delta * 1.8)
-			if cat_root.position.x >= 1.12: set_state("shelter")
+			cat_dir = -1.0
+			cat_root.position.x = move_toward(cat_root.position.x, -1.18, delta * 1.8)
+			if cat_root.position.x <= -1.12: set_state("shelter")
 		"coffee": cat_root.position.x = move_toward(cat_root.position.x, -0.12, delta * 0.45)
-		"celebrate": cat_root.position.y = 0.08 + abs(sin(Time.get_ticks_msec() / 130.0)) * 0.08
+		"celebrate": cat_root.position.x = -0.72 + sin(Time.get_ticks_msec() / 150.0) * 0.12
 	cat_root.rotation_degrees = Vector3(0, -90 if cat_dir < 0 else 90, 0)
 	update_text()
 
@@ -235,7 +266,7 @@ func set_state(next: String) -> void:
 	state_timer = 0.0
 	steam.emitting = next == "coffee"
 	cat_root.visible = next != "shelter"
-	if next in ["running", "scared", "building", "walking", "celebrate"]: play_run(2.0 if next in ["running", "scared"] else 0.7)
+	if next in ["fetching", "carrying", "running", "scared", "building", "celebrate"]: play_run(2.0 if next in ["running", "scared"] else (1.15 if next in ["fetching", "carrying"] else 0.55))
 	elif is_instance_valid(animation_player): animation_player.pause()
 
 func find_animation_player(root: Node) -> AnimationPlayer:
@@ -256,8 +287,11 @@ func play_run(speed := 1.0) -> void:
 func update_text() -> void:
 	if not is_instance_valid(progress_label): return
 	progress_label.text = "BUILD %d%%" % int(_progress)
-	var message := "Building with the run rig…"
+	var message := "Going to get supplies…"
 	match cat_state:
+		"fetching": message = "Running right for supplies"
+		"carrying": message = "Carrying materials left"
+		"building": message = "Building the next house stage"
 		"coffee": message = "Coffee and steam break"
 		"running": message = "Rain! Running for shelter"
 		"scared": message = "Thunder!"

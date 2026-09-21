@@ -191,6 +191,7 @@ var artifact_monitor_compact: PanelContainer
 var artifact_monitor_compact_progress: ProgressBar
 var artifact_monitor_compact_label: Label
 var artifact_monitor_cat: Control
+var artifact_monitor_compact_large := false
 var active_image_edit_action := false
 var stream_retry_count := 0
 var stream_retry_not_before_ms := 0
@@ -7983,15 +7984,23 @@ func show_artifact_compact_monitor() -> void:
 	compact_stack.add_child(row)
 	artifact_monitor_compact_label = Label.new()
 	artifact_monitor_compact_label.text = "SAM BUILD"
-	artifact_monitor_compact_label.custom_minimum_size.x = 82
+	artifact_monitor_compact_label.custom_minimum_size.x = 66
 	artifact_monitor_compact_label.add_theme_color_override("font_color", colors.cyan)
 	row.add_child(artifact_monitor_compact_label)
 	artifact_monitor_compact_progress = ProgressBar.new()
 	artifact_monitor_compact_progress.show_percentage = false
 	artifact_monitor_compact_progress.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	artifact_monitor_compact_progress.custom_minimum_size = Vector2(150, 14)
+	artifact_monitor_compact_progress.custom_minimum_size = Vector2(100, 14)
 	style_visual_progress_bar(artifact_monitor_compact_progress)
 	row.add_child(artifact_monitor_compact_progress)
+	var resize := Button.new()
+	resize.text = "SIZE +"
+	resize.tooltip_text = "Toggle a larger 3D builder view"
+	resize.pressed.connect(func():
+		artifact_monitor_compact_large = not artifact_monitor_compact_large
+		resize.text = "SIZE −" if artifact_monitor_compact_large else "SIZE +"
+		resize_artifact_compact_monitor())
+	row.add_child(resize)
 	var restore := Button.new()
 	restore.text = "RESTORE"
 	restore.pressed.connect(show_artifact_build_monitor)
@@ -8000,6 +8009,14 @@ func show_artifact_compact_monitor() -> void:
 	compact_stack.add_child(artifact_monitor_cat)
 	add_child(card)
 	apply_theme_recursive(card)
+	resize_artifact_compact_monitor()
+
+func resize_artifact_compact_monitor() -> void:
+	if not is_instance_valid(artifact_monitor_compact):
+		return
+	var target_size := Vector2(650, 190) if artifact_monitor_compact_large else Vector2(420, 112)
+	artifact_monitor_compact.size = target_size
+	artifact_monitor_compact.position = Vector2(-target_size.x - 20.0, -target_size.y * 0.5)
 
 func hide_artifact_compact_monitor() -> void:
 	if is_instance_valid(artifact_monitor_compact):
@@ -8051,6 +8068,7 @@ func close_artifact_build_monitor() -> void:
 	artifact_monitor_compact_progress = null
 	artifact_monitor_compact_label = null
 	artifact_monitor_cat = null
+	artifact_monitor_compact_large = false
 
 func is_visual_creation_request(value: String) -> bool:
 	var lower := value.to_lower()
