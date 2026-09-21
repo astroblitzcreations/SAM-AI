@@ -4,6 +4,11 @@ SAM-AI is a private, local and offline desktop AI interface built with Godot 4.6
 It runs GGUF language and vision models through llama.cpp, supports attachments,
 local memory, Kokoro speech output, and Whisper speech-to-text.
 
+Image and video generation are isolated in the **Image + Video Studio** tab.
+Normal Chat handles conversation, coding, and artifact building and cannot start a
+visual module accidentally. Studio includes dedicated prompts, engine selection,
+reference images, presets, video duration/FPS, and module installation controls.
+
 Created by Steadyforge of Astroblitz Creations and Makazhan.
 
 ## Windows release

@@ -44,6 +44,7 @@ const ESP_BRIDGE_HOST := "127.0.0.1"
 const ESP_BRIDGE_PORT := 8765
 const ESP_TRANSCRIPT_DIR := "E:/sam-ai/external_audio"
 const STARTUP_SCENE := preload("res://sam_ai_startup/SAMStartupBackground.tscn")
+const VISUAL_STUDIO_SCRIPT := preload("res://scripts/visual_studio.gd")
 const STOP_TOKENS := ["<|im_end|>", "<|im_start|>", "<|eot_id|>", "<|end_of_text|>"]
 const BUILTIN_BACKGROUNDS := ["res://assets/backgrounds/chat.png",
 	"res://assets/backgrounds/memory.png", "res://assets/backgrounds/engine.png",
@@ -253,6 +254,9 @@ var command_center_run_regular_check: CheckButton
 var command_center_run_admin_check: CheckButton
 var supervised_run_jobs: Array[Dictionary] = []
 var visual_job_previous_max_fps := 0
+var visual_studio: VBoxContainer
+var visual_studio_turn := false
+var visual_studio_frame_count := 81
 var automatic_path_repairs: Dictionary = {}
 var pending_image_capability_request := ""
 var pending_image_capability_path := ""
@@ -727,7 +731,7 @@ func bind_editor_ui() -> void:
 	setup_modules_tab()
 	setup_chat_workspace()
 	setup_attachment_card()
-	setup_quick_image_prompts()
+	setup_visual_studio()
 	setup_context_help_buttons()
 	setup_security_center()
 	setup_stats_tab()
@@ -1871,6 +1875,27 @@ func quick_image_prompt_presets() -> Array[Dictionary]:
 		{"name": "REFERENCE • NEW ROOM AND POSE", "prompt": "Use the attached image as the identity and appearance reference. Place the same person in a clearly different realistic room and pose while preserving the recognizable face, hair, skin tone, clothing, and accessories unless explicitly changed. Create a visible compositional transformation rather than a near-copy. Use anatomically correct proportions, natural hands, coherent perspective, environmental lighting, and contact shadows. Save both the original Wan image and the face-restored version."}
 	]
 
+func remove_stale_quick_image_prompt(value: String) -> String:
+	var cleaned := value
+	for preset in quick_image_prompt_presets():
+		var stale := str(preset.prompt)
+		if cleaned.contains(stale):
+			cleaned = cleaned.replace(stale, "").strip_edges()
+			log_line("ROUTER", "Removed a legacy Quick Image preset from the normal Chat composer")
+	return cleaned
+
+func visual_request_is_video(value: String) -> bool:
+	var lower := value.to_lower()
+	return lower.contains("video") or lower.contains("movie") or lower.contains("film clip") or lower.contains("image to video") or lower.contains("bring this image to life")
+
+func is_explicit_visual_generation_request(value: String) -> bool:
+	if is_code_request(value):
+		return false
+	var lower := value.to_lower()
+	var creation := lower.contains("create") or lower.contains("generate") or lower.contains("make me") or lower.contains("make a") or lower.contains("make an") or lower.contains("render") or lower.contains("draw")
+	var media := lower.contains(" image") or lower.contains("picture") or lower.contains("photo") or lower.contains("portrait") or lower.contains("wallpaper") or lower.contains("artwork") or lower.contains("illustration") or lower.contains(" video") or lower.contains("movie") or lower.contains("film clip")
+	return creation and media
+
 func setup_quick_image_prompts() -> void:
 	# The editor scene and exported startup shell can reparent/rename the Chat
 	# containers. Anchor to the already-resolved Send button instead of looking
@@ -1893,6 +1918,55 @@ func setup_quick_image_prompts() -> void:
 	if new_session != null:
 		actions.move_child(menu, new_session.get_index())
 	apply_theme_recursive(menu)
+
+func setup_visual_studio() -> void:
+	var tabs: TabContainer = $Page/Tabs
+	visual_studio = VISUAL_STUDIO_SCRIPT.new() as VBoxContainer
+	tabs.add_child(visual_studio)
+	tabs.set_tab_title(tabs.get_tab_idx_from_control(visual_studio), "Image + Video Studio")
+	visual_studio.generate_requested.connect(on_visual_studio_generate)
+	visual_studio.install_requested.connect(show_wan22_install_dialog)
+	apply_theme_recursive(visual_studio)
+	# Quick Image no longer shares Chat's composer. It is now only a shortcut
+	# into the isolated studio, preventing stale visual presets from contaminating
+	# coding or ordinary conversation turns.
+	var actions := send_button.get_parent()
+	var studio_button := make_button("✨ IMAGE STUDIO", open_visual_studio, colors.cyan)
+	studio_button.tooltip_text = "Open the isolated image and video generation workspace"
+	actions.add_child(studio_button)
+	var new_session := actions.get_node_or_null("NewSession")
+	if new_session:
+		actions.move_child(studio_button, new_session.get_index())
+
+func open_visual_studio(prompt := "", output_kind := "image") -> void:
+	if visual_studio == null:
+		return
+	var tabs: TabContainer = $Page/Tabs
+	tabs.current_tab = tabs.get_tab_idx_from_control(visual_studio)
+	if not prompt.is_empty():
+		visual_studio.set_prompt(prompt, output_kind)
+
+func on_visual_studio_generate(prompt: String, output_kind: String, duration_seconds: float, fps: int, reference_path: String, engine: String) -> void:
+	if generating:
+		visual_studio.set_status("SAM is busy with another turn • wait or abort it before generating media")
+		return
+	settings.visual_module_preference = "wan" if engine.begins_with("Wan") else ("local" if engine.begins_with("SAM Local") else "auto")
+	settings.image_generation_engine = engine
+	settings.video_generation_engine = "Wan 2.2 TI2V-5B" if output_kind == "video" else str(settings.get("video_generation_engine", "Wan 2.2 TI2V-5B"))
+	save_json(SETTINGS_FILE, settings)
+	visual_studio_frame_count = 1 if output_kind == "image" else maxi(1, roundi(duration_seconds * fps))
+	if not reference_path.is_empty():
+		if not FileAccess.file_exists(reference_path):
+			visual_studio.set_status("Reference image was not found • choose it again")
+			return
+		attached_image_path = reference_path
+	else:
+		clear_attachment()
+	visual_studio_turn = true
+	var reference_instruction := "Use this image as a reference and " if not reference_path.is_empty() else ""
+	input_box.text = ("Create an image: " if output_kind == "image" else "Create a video lasting %.1f seconds at %d FPS: " % [duration_seconds, fps]) + reference_instruction + prompt
+	visual_studio.set_status("Preparing %s • %d frame%s" % [output_kind, visual_studio_frame_count, "" if visual_studio_frame_count == 1 else "s"])
+	send_message()
 
 func insert_quick_image_prompt(preset_id: int) -> void:
 	var presets := quick_image_prompt_presets()
@@ -3115,6 +3189,11 @@ func resume_pending_vision_send() -> void:
 
 func send_message() -> void:
 	var user_text := input_box.text.strip_edges()
+	var studio_turn := visual_studio_turn
+	visual_studio_turn = false
+	if not studio_turn:
+		user_text = remove_stale_quick_image_prompt(user_text)
+		input_box.text = user_text
 	var source_trace_question := ""
 	if new_chat_welcome_visible and not user_text.is_empty():
 		new_chat_welcome_active = false
@@ -3147,25 +3226,31 @@ func send_message() -> void:
 			restore_recent_image_context(user_text)
 	if handle_primary_model_command(user_text):
 		return
-	if handle_visual_module_command(user_text):
-		return
-	if answer_disallowed_nudification(user_text):
-		return
-	if handle_wan_video_request(user_text):
-		return
-	if handle_wan_text_image_request(user_text):
-		return
-	if handle_wan_reference_image_request(user_text):
-		return
-	if handle_wan_image_request(user_text):
-		return
-	if handle_direct_clothing_replace(user_text):
-		return
-	if handle_direct_shirt_recolor(user_text):
-		return
-	if answer_unavailable_generative_image_edit(user_text):
-		return
-	if answer_vague_image_edit_request(user_text):
+	if studio_turn:
+		if handle_visual_module_command(user_text):
+			return
+		if answer_disallowed_nudification(user_text):
+			return
+		if handle_wan_video_request(user_text):
+			return
+		if handle_wan_reference_image_request(user_text):
+			return
+		if handle_wan_text_image_request(user_text):
+			return
+		if handle_wan_image_request(user_text):
+			return
+		if handle_direct_clothing_replace(user_text):
+			return
+		if handle_direct_shirt_recolor(user_text):
+			return
+		if answer_unavailable_generative_image_edit(user_text):
+			return
+		if answer_vague_image_edit_request(user_text):
+			return
+	elif is_explicit_visual_generation_request(user_text):
+		input_box.clear()
+		open_visual_studio(user_text, "video" if visual_request_is_video(user_text) else "image")
+		show_toast("Visual request moved to Image + Video Studio • review settings and Generate")
 		return
 	if handle_recent_learning_question(user_text):
 		return
@@ -4623,7 +4708,7 @@ func handle_wan_video_request(user_text: String) -> bool:
 		return false
 
 	# Explicitly define frame count and output kind variables for pure video generation
-	var frame_count_val := "81"
+	var frame_count_val := str(maxi(1, visual_studio_frame_count))
 	var output_kind_val := "video"
 
 	var source_image := attached_image_path
@@ -4781,7 +4866,7 @@ func handle_wan_reference_image_request(user_text: String) -> bool:
 	# Content words are not edit intent. A noun such as hat/ring/background may
 	# describe an image or appear in normal prose. Require an explicit reference
 	# instruction or an actual visual edit command before Wan can claim this turn.
-	var asks_reference := (reference_words and transformation_words and not analysis_question) or explicit_edit_command
+	var asks_reference := (reference_words and (transformation_words or lower.begins_with("create an image:")) and not analysis_question) or explicit_edit_command
 	# Local SD inpainting is appropriate for localized appearance edits, but it
 	# cannot reliably rebuild pose/viewpoint/scene geometry. Automatically choose
 	# Wan for those large transformations unless the same request explicitly
@@ -4810,7 +4895,7 @@ func handle_wan_reference_image_request(user_text: String) -> bool:
 	var output_kind_val := "video" if wants_video else "image"
 	
 	# Change 33 to 17 for images to reduce temporal stretching and blur
-	var frame_count_val := "81" if wants_video else "1"
+	var frame_count_val := str(maxi(1, visual_studio_frame_count)) if wants_video else "1"
 
 	var source_image := attached_image_path
 	var generated_dir := active_session_workspace_dir().path_join("wan22_reference_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_"))
@@ -12440,7 +12525,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.6 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.3.0 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):

@@ -1,4 +1,15 @@
-# SAM-AI v1.2.6
+# SAM-AI v1.3.0
+
+## New in v1.3.0
+
+- Image and video creation now live in a dedicated **Image + Video Studio** tab with a separate composer.
+- Normal Chat is unable to invoke Wan, inpainting, clothing replacement, recoloring, or other visual-generation handlers; only a Studio-origin request can unlock them.
+- Legacy Quick Image presets are removed from the normal composer automatically, preventing a stale image prompt from contaminating coding requests such as building a Python Tetris game.
+- The former Quick Image control now opens Image + Video Studio instead of inserting text into Chat.
+- Studio provides Image/Video mode, engine selection, quick prompts, optional reference-image selection, duration, FPS, calculated frame count, install/repair, clear, and generate controls.
+- Video duration and FPS now determine the generated Wan frame count instead of always using 81 frames.
+- Explicit image/video requests typed in Chat are moved into Studio for review rather than immediately launching a visual module.
+- Visual Studio UI and state are isolated in `scripts/visual_studio.gd`, beginning the separation of media modules from the main chat controller.
 
 ## Fixed in v1.2.6
 
