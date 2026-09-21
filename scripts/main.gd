@@ -226,6 +226,8 @@ var toast_label: Label
 var toast_tween: Tween
 
 var status_label: Label
+var status_action := Callable()
+var status_attention_tween: Tween
 var status_dot: Label
 var privacy_button: MenuButton
 var microphone_privacy_button: Button
@@ -642,6 +644,8 @@ func bind_editor_ui() -> void:
 	background_rect = $BackgroundImage
 	status_dot = $Page/Header/StatusDot
 	status_label = $Page/Header/StatusLabel
+	status_label.mouse_filter = Control.MOUSE_FILTER_STOP
+	status_label.gui_input.connect(_on_status_label_input)
 	setup_privacy_indicator()
 	setup_playground_manager()
 	setup_command_center()
@@ -1963,6 +1967,10 @@ func on_visual_studio_generate(prompt: String, output_kind: String, duration_sec
 	if generating:
 		visual_studio.set_status("SAM is busy with another turn • wait or abort it before generating media")
 		return
+	# Studio jobs are isolated from Chat's code-builder lifecycle. A failed code
+	# repair from an earlier project must never consume or reroute a media job.
+	reset_artifact_repair_state()
+	set_status("VISUAL STUDIO • PREPARING %s" % output_kind.to_upper(), colors.cyan)
 	settings.visual_module_preference = "wan" if engine.begins_with("Wan") else ("local" if engine.begins_with("SAM Local") else "auto")
 	settings.image_generation_engine = engine
 	settings.video_generation_engine = "Wan 2.2 TI2V-5B" if output_kind == "video" else str(settings.get("video_generation_engine", "Wan 2.2 TI2V-5B"))
@@ -3485,7 +3493,7 @@ func send_message() -> void:
 	# Live Voice keeps code generation on the normal streaming path so prose can
 	# begin with TTS and fenced source stays silent. The heavy Artifact Builder
 	# presentation path intentionally suppresses streaming and would make voice lag.
-	var artifact_builder_mode := false if command_center_turn or live_voice_turn else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text) or not artifact_repair_target_path.is_empty())
+	var artifact_builder_mode := false if command_center_turn or live_voice_turn or studio_turn else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text) or not artifact_repair_target_path.is_empty())
 	active_artifact_builder_mode = artifact_builder_mode
 	active_image_edit_action = artifact_builder_mode and not attached_image_path.is_empty() and is_executable_action_request(request_text)
 	if artifact_builder_mode:
@@ -8502,7 +8510,12 @@ func request_run_rendered_code(code_id: int) -> void:
 	if path.is_empty():
 		show_toast("Could not create the playground project")
 		return
-	var validation := validate_staged_text_file(path, FileAccess.get_file_as_string(path))
+	var normalized_visual_path := path.replace("\\", "/")
+	var is_visual_job := normalized_visual_path.contains("/clothing_replace_") or normalized_visual_path.contains("/shirt_recolor_") or normalized_visual_path.contains("/wan22_")
+	# Visual jobs are generated from SAM-owned templates, not model-written code.
+	# Do not feed them into the conversational code-repair loop; that loop belongs
+	# only to Artifact Builder output.
+	var validation := {"ok": true, "detail": "SAM visual template prepared."} if is_visual_job else validate_staged_text_file(path, FileAccess.get_file_as_string(path))
 	if not bool(validation.get("ok", false)):
 		var detail := str(validation.get("detail", "Source validation failed."))
 		set_status("BUILD NEEDS REPAIR • RUN BLOCKED", colors.amber)
@@ -8521,8 +8534,6 @@ func request_run_rendered_code(code_id: int) -> void:
 	dialog.title = "RUN GENERATED CODE?"
 	dialog.dialog_text = "Review the code before running it. Generated scripts can modify files, use the network, or launch other programs.\n\nExecutable:\n%s\n\nScript:\n%s\n\nWorking boundary for generated files:\n%s\n\nThis run is not elevated." % [executable, path, command_workspace_dir()]
 	dialog.ok_button_text = "RUN ONCE"
-	var normalized_visual_path := path.replace("\\", "/")
-	var is_visual_job := normalized_visual_path.contains("/clothing_replace_") or normalized_visual_path.contains("/wan22_")
 	var original_visual_prompt := visual_prompt_from_script(path) if is_visual_job else ""
 	if is_visual_job:
 		dialog.dialog_text = "Review the visual plan before running it. The script can create files and launch the finished result.\n\nScript: %s\nBoundary: %s\nNot elevated." % [path, command_workspace_dir()]
@@ -9089,7 +9100,7 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	if not FileAccess.file_exists(path):
 		return
 	if artifact_total_retry_count >= 3:
-		set_status("AUTO-FIX PAUSED • MANUAL REVIEW NEEDED", colors.amber)
+		set_actionable_status("AUTO-FIX PAUSED • CLICK FOR MANUAL REVIEW", colors.amber, open_artifact_manual_review, "Open the failed build in Live Preview")
 		set_artifact_monitor_phase("BUILD PAUSED • MANUAL REVIEW NEEDED", "SAM stopped after 3 total rebuild/repair attempts so it cannot loop forever. Open Live Preview or add a new influence before trying again.", 100)
 		show_toast("Build stopped after 3 total attempts • open Live Preview to review it")
 		return
@@ -9105,6 +9116,32 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	set_artifact_monitor_phase("AUTO-FIX • TOTAL ATTEMPT %d OF 3" % artifact_total_retry_count, detail.left(500), 0)
 	show_toast("Auto-fix caught an error • total attempt %d of 3" % artifact_total_retry_count)
 	call_deferred("send_message")
+
+func reset_artifact_repair_state() -> void:
+	artifact_repair_target_path = ""
+	artifact_repair_language = ""
+	artifact_repair_prompt = ""
+	artifact_validation_retry_count = 0
+	artifact_total_retry_count = 0
+	artifact_auto_retry_count = 0
+	artifact_retry_in_progress = false
+	artifact_partial_response = ""
+	active_artifact_builder_mode = false
+	active_artifact_language = ""
+	active_artifact_request = ""
+	close_artifact_build_monitor()
+
+func open_artifact_manual_review() -> void:
+	var tabs: TabContainer = $Page/Tabs
+	var chat_tab := $Page/Tabs/Chat
+	tabs.current_tab = tabs.get_tab_idx_from_control(chat_tab)
+	if not rendered_code_blocks.is_empty():
+		show_code_preview(rendered_code_blocks.size() - 1)
+	elif not artifact_repair_target_path.is_empty() and FileAccess.file_exists(artifact_repair_target_path):
+		attach_file(artifact_repair_target_path)
+		input_box.text = artifact_repair_prompt
+		input_box.grab_focus()
+	show_toast("Manual review opened • inspect the source or add a new influence")
 
 func install_python_dependency(package: String, path: String, language: String) -> void:
 	var directory := path.get_base_dir()
@@ -13349,6 +13386,12 @@ func create_new_session() -> void:
 		show_toast("Finish or abort the active generation before switching sessions")
 		return
 	save_history()
+	reset_artifact_repair_state()
+	visual_studio_turn = false
+	pending_vision_send = false
+	pending_primary_text_send = false
+	if is_instance_valid(visual_studio):
+		visual_studio.reset_for_session()
 	session_id = create_session_record("New session")
 	history.clear()
 	sent_messages.clear()
@@ -13379,6 +13422,12 @@ func switch_selected_session() -> void:
 
 func switch_to_session(target: String) -> void:
 	save_history()
+	reset_artifact_repair_state()
+	visual_studio_turn = false
+	pending_vision_send = false
+	pending_primary_text_send = false
+	if is_instance_valid(visual_studio):
+		visual_studio.reset_for_session()
 	# Clear the outgoing session's live attachment before loading the target.
 	# Images saved inside either transcript remain visible as history, but are not
 	# silently submitted with the next message.
@@ -13596,10 +13645,48 @@ func cycle_theme() -> void:
 	set_status("THEME • " + str(settings.theme).to_upper(), colors.cyan)
 
 func set_status(text_value: String, color: Color) -> void:
+	if is_instance_valid(status_attention_tween):
+		status_attention_tween.kill()
+	status_attention_tween = null
+	status_action = Callable()
 	if is_instance_valid(status_label):
 		status_label.text = " " + text_value
+		status_label.modulate = Color.WHITE
+		status_label.tooltip_text = ""
+		status_label.mouse_default_cursor_shape = Control.CURSOR_ARROW
 	if is_instance_valid(status_dot):
 		status_dot.add_theme_color_override("font_color", color)
+	var upper := text_value.to_upper()
+	var needs_attention := contains_any(upper, ["ERROR", "FAILED", "NEEDS REPAIR", "PAUSED", "TIMEOUT", "NOT FOUND", "REJECTED"])
+	if needs_attention and is_instance_valid(status_label):
+		status_action = open_debug_telemetry
+		status_label.tooltip_text = "Click to open Debug Telemetry and troubleshooting details"
+		status_label.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		status_attention_tween = create_tween().set_loops()
+		status_attention_tween.tween_property(status_label, "modulate:a", 0.38, 0.55).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		status_attention_tween.tween_property(status_label, "modulate:a", 1.0, 0.55).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+func set_actionable_status(text_value: String, color: Color, action: Callable, tooltip: String) -> void:
+	set_status(text_value, color)
+	status_action = action
+	if not is_instance_valid(status_label):
+		return
+	status_label.tooltip_text = tooltip
+	status_label.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	status_attention_tween = create_tween().set_loops()
+	status_attention_tween.tween_property(status_label, "modulate:a", 0.38, 0.55).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	status_attention_tween.tween_property(status_label, "modulate:a", 1.0, 0.55).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+func _on_status_label_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed and status_action.is_valid():
+		status_action.call()
+		get_viewport().set_input_as_handled()
+
+func open_debug_telemetry() -> void:
+	var tabs: TabContainer = $Page/Tabs
+	var debug_tab := $Page/Tabs/DebugTelemetry
+	tabs.current_tab = tabs.get_tab_idx_from_control(debug_tab)
+	show_toast("Troubleshooting details opened • use COPY LOG when requesting support")
 
 func setup_privacy_indicator() -> void:
 	if is_instance_valid(privacy_button):

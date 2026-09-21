@@ -168,3 +168,10 @@ func set_prompt(value: String, output_kind := "image") -> void:
 
 func set_status(value: String) -> void:
 	status_label.text = value
+
+func reset_for_session() -> void:
+	prompt_editor.clear()
+	reference_path.clear()
+	kind_selector.select(0)
+	update_mode()
+	status_label.text = "Studio idle • fresh project session"
