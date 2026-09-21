@@ -43,7 +43,6 @@ const HOST := "127.0.0.1"
 const ESP_BRIDGE_HOST := "127.0.0.1"
 const ESP_BRIDGE_PORT := 8765
 const ESP_TRANSCRIPT_DIR := "E:/sam-ai/external_audio"
-const STARTUP_SCENE := preload("res://sam_ai_startup/SAMStartupBackground.tscn")
 const VISUAL_STUDIO_SCRIPT := preload("res://scripts/visual_studio.gd")
 const BUILDER_CAT_SCRIPT := preload("res://scripts/builder_cat.gd")
 const STOP_TOKENS := ["<|im_end|>", "<|im_start|>", "<|eot_id|>", "<|end_of_text|>"]
@@ -2030,7 +2029,13 @@ func attachment_excerpt(value: String, max_lines := 7, max_chars := 700) -> Stri
 	return excerpt
 
 func show_startup_screen() -> void:
-	startup_screen = STARTUP_SCENE.instantiate()
+	# Load this scene only when needed. SAMBoot owns the same startup scene and
+	# preloading it here creates a circular startup dependency in exported runs.
+	var startup_scene := load("res://sam_ai_startup/SAMStartupBackground.tscn") as PackedScene
+	if startup_scene == null:
+		push_error("SAM startup background could not be loaded")
+		return
+	startup_screen = startup_scene.instantiate()
 	# Below the first-run setup (z=50), but above the regular application.
 	startup_screen.z_index = 40
 	add_child(startup_screen)
@@ -7960,14 +7965,14 @@ func minimize_artifact_build_monitor() -> void:
 
 func show_artifact_compact_monitor() -> void:
 	if is_instance_valid(artifact_monitor_compact):
+		resize_artifact_compact_monitor()
 		artifact_monitor_compact.show()
+		artifact_monitor_compact.move_to_front()
 		return
 	var card := PanelContainer.new()
 	artifact_monitor_compact = card
 	card.z_index = 45
-	card.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
-	card.position = Vector2(-440, -62)
-	card.size = Vector2(420, 112)
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.025, 0.06, 0.105, 0.98)
 	style.border_color = colors.cyan
@@ -8015,8 +8020,15 @@ func resize_artifact_compact_monitor() -> void:
 	if not is_instance_valid(artifact_monitor_compact):
 		return
 	var target_size := Vector2(650, 190) if artifact_monitor_compact_large else Vector2(420, 112)
-	artifact_monitor_compact.size = target_size
-	artifact_monitor_compact.position = Vector2(-target_size.x - 20.0, -target_size.y * 0.5)
+	# Pin the card with explicit right/top offsets. Using Control.position with
+	# right-side anchors can turn a negative offset into a negative absolute
+	# position, which made the minimized monitor disappear on wide windows.
+	artifact_monitor_compact.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	artifact_monitor_compact.offset_left = -target_size.x - 18.0
+	artifact_monitor_compact.offset_right = -18.0
+	artifact_monitor_compact.offset_top = 74.0
+	artifact_monitor_compact.offset_bottom = 74.0 + target_size.y
+	artifact_monitor_compact.move_to_front()
 
 func hide_artifact_compact_monitor() -> void:
 	if is_instance_valid(artifact_monitor_compact):
@@ -12796,6 +12808,7 @@ func show_next_security_alert() -> void:
 	var connection: Dictionary = security_alert_queue.pop_front()
 	security_alert_dialog_open = true
 	var dialog := AcceptDialog.new()
+	dialog.exclusive = false
 	dialog.title = "SAM NETWORK GUARD • NEW NETWORK ACTIVITY"
 	var is_listener := str(connection.get("state", "")) == "Listen"
 	dialog.dialog_text = "%s\n\nApp: %s\nPID: %s\nDirection: %s\nLocal: %s\nRemote: %s\nExecutable: %s\n\nALLOW ONCE dismisses only this alert. TRUST APP or BLOCK APP is saved immediately in SAM and suppresses repeat alerts; Windows Firewall enforcement then requests one-time administrator approval." % ["An app opened a non-loopback inbound listener." if is_listener else "An app connected to a remote address.", connection.get("name", "unknown"), connection.get("pid", 0), connection.get("direction", ""), connection.get("local", ""), connection.get("remote", ""), connection.get("path", "Unavailable")]
@@ -12904,6 +12917,7 @@ func ask_sam_about_connection(connection: Dictionary) -> void:
 func show_network_research_options(connection: Dictionary) -> void:
 	security_secondary_dialog_open = true
 	var dialog := AcceptDialog.new()
+	dialog.exclusive = false
 	dialog.title = "INVESTIGATE NETWORK ACTIVITY"
 	dialog.dialog_text = connection_details_text(connection) + "\n\nChoose an investigation source. IP LOOKUP is best when the owning process is unknown."
 	dialog.ok_button_text = "CLOSE"
