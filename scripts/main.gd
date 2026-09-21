@@ -45,6 +45,7 @@ const ESP_BRIDGE_PORT := 8765
 const ESP_TRANSCRIPT_DIR := "E:/sam-ai/external_audio"
 const STARTUP_SCENE := preload("res://sam_ai_startup/SAMStartupBackground.tscn")
 const VISUAL_STUDIO_SCRIPT := preload("res://scripts/visual_studio.gd")
+const BUILDER_CAT_SCRIPT := preload("res://scripts/builder_cat.gd")
 const STOP_TOKENS := ["<|im_end|>", "<|im_start|>", "<|eot_id|>", "<|end_of_text|>"]
 const BUILTIN_BACKGROUNDS := ["res://assets/backgrounds/chat.png",
 	"res://assets/backgrounds/memory.png", "res://assets/backgrounds/engine.png",
@@ -189,8 +190,7 @@ var artifact_monitor_detail: Label
 var artifact_monitor_compact: PanelContainer
 var artifact_monitor_compact_progress: ProgressBar
 var artifact_monitor_compact_label: Label
-var artifact_monitor_cat: Label
-var artifact_monitor_cat_elapsed := 0.0
+var artifact_monitor_cat: Control
 var active_image_edit_action := false
 var stream_retry_count := 0
 var stream_retry_not_before_ms := 0
@@ -2927,7 +2927,6 @@ func setting_text(key: String) -> String:
 	return str(settings[key])
 
 func _process(delta: float) -> void:
-	update_artifact_builder_cat(delta)
 	if is_instance_valid(cuda_runtime_request) and is_instance_valid(cuda_install_progress):
 		var total_bytes := cuda_runtime_request.get_body_size()
 		var downloaded_bytes := cuda_runtime_request.get_downloaded_bytes()
@@ -7966,8 +7965,9 @@ func show_artifact_compact_monitor() -> void:
 	artifact_monitor_compact = card
 	card.z_index = 45
 	card.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	card.position = Vector2(-410, 72)
-	card.size = Vector2(390, 82)
+	card.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	card.position = Vector2(-440, -142)
+	card.size = Vector2(420, 112)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.025, 0.06, 0.105, 0.98)
 	style.border_color = colors.cyan
@@ -7997,12 +7997,7 @@ func show_artifact_compact_monitor() -> void:
 	restore.text = "RESTORE"
 	restore.pressed.connect(show_artifact_build_monitor)
 	row.add_child(restore)
-	artifact_monitor_cat = Label.new()
-	artifact_monitor_cat.text = "🐈  🔨  building…"
-	artifact_monitor_cat.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	artifact_monitor_cat.clip_text = true
-	artifact_monitor_cat.add_theme_color_override("font_color", Color("#a9bad3"))
-	artifact_monitor_cat.add_theme_font_size_override("font_size", 13)
+	artifact_monitor_cat = BUILDER_CAT_SCRIPT.new() as Control
 	compact_stack.add_child(artifact_monitor_cat)
 	add_child(card)
 	apply_theme_recursive(card)
@@ -8010,25 +8005,6 @@ func show_artifact_compact_monitor() -> void:
 func hide_artifact_compact_monitor() -> void:
 	if is_instance_valid(artifact_monitor_compact):
 		artifact_monitor_compact.hide()
-
-func update_artifact_builder_cat(delta: float) -> void:
-	if not is_instance_valid(artifact_monitor_compact) or not artifact_monitor_compact.visible or not is_instance_valid(artifact_monitor_cat):
-		return
-	artifact_monitor_cat_elapsed += delta
-	var frame := int(artifact_monitor_cat_elapsed * 3.0)
-	var cat_frames := ["🐈", "🐈‍⬛", "🐈", "🐾"]
-	var tool_frames := ["🔨", "🪚", "🧰", "🧱"]
-	var position := frame % 22
-	if (frame / 22) % 2 == 1:
-		position = 21 - position
-	var percent := int(artifact_monitor_compact_progress.value) if is_instance_valid(artifact_monitor_compact_progress) else 0
-	var house := "·" if percent < 20 else ("▱" if percent < 45 else ("⌂" if percent < 75 else "🏠"))
-	var scene := " ".repeat(position) + str(cat_frames[frame % cat_frames.size()]) + " " + str(tool_frames[frame % tool_frames.size()]) + "  " + house
-	if frame % 29 == 0:
-		scene = "🐈 …coffee break… ☕  " + house
-	elif frame % 37 == 0:
-		scene = "                    🐈💨  (back soon)"
-	artifact_monitor_cat.text = scene
 
 func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: int, budget: int, percent: int) -> void:
 	if not is_instance_valid(artifact_monitor):
@@ -8039,6 +8015,8 @@ func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: i
 		artifact_monitor_compact_progress.value = percent
 	if is_instance_valid(artifact_monitor_compact_label):
 		artifact_monitor_compact_label.text = "BUILD %d%%" % percent
+	if is_instance_valid(artifact_monitor_cat):
+		artifact_monitor_cat.call("set_progress", float(percent))
 	if is_instance_valid(artifact_monitor_label):
 		var attempt_text := ""
 		if artifact_validation_retry_count > 0:
@@ -8061,6 +8039,8 @@ func set_artifact_monitor_phase(title: String, detail: String, percent := -1) ->
 	if percent >= 0 and is_instance_valid(artifact_monitor_compact_progress):
 		artifact_monitor_compact_progress.value = percent
 		artifact_monitor_compact_label.text = "BUILD %d%%" % percent
+		if is_instance_valid(artifact_monitor_cat):
+			artifact_monitor_cat.call("set_progress", float(percent))
 
 func close_artifact_build_monitor() -> void:
 	if is_instance_valid(artifact_monitor):
@@ -8075,7 +8055,6 @@ func close_artifact_build_monitor() -> void:
 	artifact_monitor_compact_progress = null
 	artifact_monitor_compact_label = null
 	artifact_monitor_cat = null
-	artifact_monitor_cat_elapsed = 0.0
 
 func is_visual_creation_request(value: String) -> bool:
 	var lower := value.to_lower()
@@ -8412,10 +8391,18 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	var preview := TextEdit.new()
 	preview.text = rendered_code_blocks[code_id]
 	preview.editable = false
-	preview.custom_minimum_size = Vector2(0, 140)
+	preview.custom_minimum_size = Vector2(640, 140)
 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	preview.wrap_mode = TextEdit.LINE_WRAPPING_NONE
-	box.add_child(preview)
+	var preview_scroll := ScrollContainer.new()
+	preview_scroll.custom_minimum_size = Vector2(0, 150)
+	preview_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	preview_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	preview_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	preview_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	preview_scroll.add_child(preview)
+	box.add_child(preview_scroll)
 	var autofix := CheckBox.new()
 	autofix.text = "AUTO-FIX crashes and validation failures"
 	autofix.button_pressed = artifact_auto_fix_enabled
