@@ -1,4 +1,13 @@
-# SAM-AI v1.3.1
+# SAM-AI v1.4.0
+
+## New in v1.4.0
+
+- Code and application requests now open a bounded Build Review before generation. It summarizes the build and provides Start Build, Stop/Cancel, Auto-fix, and optional influence controls.
+- Large source files no longer stream or fully expand inside Chat. SAM shows live progress in one status area and keeps the complete source in a scrollable Live Preview.
+- Finished builds open a Build Ready dashboard with validation results, Run/Test, Live Preview, Open Folder, and Send New Influence actions.
+- Python builds receive a side-effect-free syntax and missing-constant audit before Run is offered. The checker catches errors such as undefined `PURPLE` and `ORANGE` color constants.
+- Auto-fix can send validation failures and captured runtime crashes back to SAM, validate the replacement, and safely save it over the generated project file with a rollback backup.
+- Automatic repair is capped at three attempts so a weak local model cannot enter an endless repair loop.
 
 ## Fixed in v1.3.1
 

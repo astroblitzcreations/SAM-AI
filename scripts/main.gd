@@ -174,6 +174,12 @@ var artifact_partial_response := ""
 var artifact_output_token_budget := 0
 var artifact_progress_next_chars := 0
 var artifact_progress_step := 500
+var artifact_build_confirmed_once := false
+var artifact_auto_fix_enabled := true
+var artifact_repair_target_path := ""
+var artifact_repair_language := ""
+var artifact_validation_retry_count := 0
+var artifact_build_dialog: Window
 var active_image_edit_action := false
 var stream_retry_count := 0
 var stream_retry_not_before_ms := 0
@@ -3055,10 +3061,8 @@ func drain_render_buffer() -> void:
 				var approximate_tokens := int(ceil(float(response_text.length()) / 3.2))
 				var budget := maxi(artifact_output_token_budget, 1)
 				var percent := mini(100, int(round(float(approximate_tokens) / float(budget) * 100.0)))
-				chat_log.append_text("[color=#4deeea]%s BUILDING COMPLETE FILE[/color]  [color=#d8e7ff]%d chars • %d lines • ~%d / %d tokens[/color]  [color=#8292ad](%d%% budget)[/color]\n" % [frame, response_text.length(), source_lines, approximate_tokens, budget, percent])
+				thinking_indicator.text = "%s BUILDING COMPLETE FILE   %d chars • %d lines • ~%d / %d tokens • %d%%" % [frame, response_text.length(), source_lines, approximate_tokens, budget, percent]
 				artifact_progress_next_chars = response_text.length() + artifact_progress_step
-				if force_chat_follow or chat_is_near_bottom():
-					chat_log.scroll_to_line(chat_log.get_line_count())
 			set_status("BUILDING COMPLETE FILE • %d CHARS" % response_text.length(), colors.green)
 			if stream_finished:
 				finish_generation()
@@ -3281,6 +3285,10 @@ func send_message() -> void:
 		show_model_switch_overlay()
 		start_engine()
 		return
+	if not studio_turn and not artifact_retry_in_progress and not artifact_build_confirmed_once and is_artifact_creation_request(user_text):
+		show_artifact_build_confirmation(user_text)
+		return
+	artifact_build_confirmed_once = false
 	if handle_recent_learning_question(user_text):
 		return
 	if handle_memory_quality_command(user_text):
@@ -3473,11 +3481,11 @@ func send_message() -> void:
 	# Live Voice keeps code generation on the normal streaming path so prose can
 	# begin with TTS and fenced source stays silent. The heavy Artifact Builder
 	# presentation path intentionally suppresses streaming and would make voice lag.
-	var artifact_builder_mode := false if command_center_turn or live_voice_turn else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text))
+	var artifact_builder_mode := false if command_center_turn or live_voice_turn else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text) or not artifact_repair_target_path.is_empty())
 	active_artifact_builder_mode = artifact_builder_mode
 	active_image_edit_action = artifact_builder_mode and not attached_image_path.is_empty() and is_executable_action_request(request_text)
 	if artifact_builder_mode:
-		if not artifact_retry_in_progress:
+		if not artifact_retry_in_progress and artifact_repair_target_path.is_empty():
 			active_artifact_request = request_text
 			artifact_auto_retry_count = 0
 			artifact_retry_in_progress = false
@@ -5756,6 +5764,8 @@ func stop_runaway_model_output_if_needed() -> bool:
 func finish_generation() -> void:
 	if not generating:
 		return
+	var completed_artifact_turn := active_artifact_builder_mode
+	var completed_repair_path := artifact_repair_target_path
 	context_request_serial += 1
 	context_resume_serial = -1
 	request_preparing = false
@@ -5824,6 +5834,18 @@ func finish_generation() -> void:
 		render_buffer = ""
 		set_status("INCOMPLETE BUILD REJECTED", colors.amber)
 		show_toast("Incomplete or split build rejected • nothing was made runnable")
+	var repaired_source := ""
+	if not completed_repair_path.is_empty():
+		repaired_source = extract_first_fenced_code(cleaned)
+		if not repaired_source.is_empty() and safely_replace_text_file(completed_repair_path, repaired_source, "artifact-auto-fix"):
+			artifact_repair_target_path = ""
+			artifact_repair_language = ""
+			artifact_validation_retry_count = 0
+			log_line("AUTO FIX", "Validated and saved repaired source: " + completed_repair_path)
+			show_toast("Auto-fix completed • repaired source validated and saved")
+		else:
+			log_line("AUTO FIX", "Repair response did not pass validation for " + completed_repair_path)
+			show_toast("Repair still needs work • source was not replaced")
 	active_artifact_builder_mode = false
 	active_artifact_language = ""
 	active_image_edit_action = false
@@ -5916,6 +5938,18 @@ func finish_generation() -> void:
 		chat_log.append_text("\n[right][url=speak:%d][color=#4deeea]🔊 READ ALOUD[/color][/url][/right]\n" % final_history_index)
 		if force_chat_follow or chat_is_near_bottom():
 			chat_log.scroll_to_line(chat_log.get_line_count())
+	if completed_artifact_turn and not rendered_code_blocks.is_empty():
+		var completed_code_id := rendered_code_blocks.size() - 1
+		var completed_path := completed_repair_path
+		if completed_path.is_empty() or not FileAccess.file_exists(completed_path):
+			completed_path = prepare_rendered_code_in_workspace(completed_code_id)
+		elif completed_code_id < rendered_code_paths.size():
+			rendered_code_paths[completed_code_id] = completed_path
+		var completed_validation := validate_staged_text_file(completed_path, FileAccess.get_file_as_string(completed_path)) if not completed_path.is_empty() else {"ok": false, "detail": "Could not save the generated source."}
+		if not bool(completed_validation.get("ok", false)) and artifact_auto_fix_enabled and not completed_path.is_empty():
+			queue_artifact_auto_fix.call_deferred(completed_path, rendered_code_languages[completed_code_id], str(completed_validation.get("detail", "Validation failed.")))
+		else:
+			show_artifact_result_dialog.call_deferred(completed_code_id, completed_path, completed_validation)
 	if should_offer_image_edit_run and not rendered_code_blocks.is_empty() and bool(settings.get("pc_commands_enabled", false)):
 		# The edit request itself authorizes preparing the job, but execution still
 		# receives the normal one-run confirmation with the exact script path.
@@ -7684,7 +7718,14 @@ func append_formatted_code_message(content: String) -> void:
 		rendered_code_languages.append(language_label)
 		rendered_code_paths.append("")
 		var code_actions := "[font_size=22][url=viewcode:%s][color=#4deeea]👁[/color][/url]   [url=savecode:%s][color=#76f7a6]💾[/color][/url]   [url=editcode:%s][color=#4deeea]✏[/color][/url]   [url=runcode:%s][color=#f9c74f]▶[/color][/url]   [url=runadmincode:%s][color=#ff667d]🛡[/color][/url]   [url=openwithcode:%s][color=#8292ad]📂[/color][/url][/font_size]" % [code_id, code_id, code_id, code_id, code_id, code_id]
-		chat_log.append_text("\n[table=1][cell bg=#17283a border=#2b3c55][color=#8da4be]  %s[/color]     [url=copycode:%s][color=#4deeea][b]⧉ COPY CODE[/b][/color][/url]\n\n[bgcolor=#0a111c][color=#d8e7ff][indent]%s[/indent][/color][/bgcolor]\n\n[right]%s  [/right][/cell][/table]\n" % [escape_bbcode(language_label), code_id, escape_bbcode(code), code_actions])
+		var source_display := escape_bbcode(code)
+		if code.length() > 2400 or code.count("\n") > 55:
+			var preview_lines := code.split("\n")
+			var preview := ""
+			for preview_index in range(mini(12, preview_lines.size())):
+				preview += str(preview_lines[preview_index]) + "\n"
+			source_display = escape_bbcode(preview.trim_suffix("\n")) + "\n\n[color=#8292ad]… %d lines / %d characters kept out of Chat to prevent scrolling. Open Live Preview to inspect the complete file.[/color]" % [code.count("\n") + 1, code.length()]
+		chat_log.append_text("\n[table=1][cell bg=#17283a border=#2b3c55][color=#8da4be]  %s[/color]     [url=copycode:%s][color=#4deeea][b]⧉ COPY CODE[/b][/color][/url]\n\n[bgcolor=#0a111c][color=#d8e7ff][indent]%s[/indent][/color][/bgcolor]\n\n[right]%s  [/right][/cell][/table]\n" % [escape_bbcode(language_label), code_id, source_display, code_actions])
 		cursor = fence_end + 3 if fence_end < content.length() else content.length()
 
 func is_sound_creation_request(value: String) -> bool:
@@ -7698,6 +7739,99 @@ func is_artifact_creation_request(value: String) -> bool:
 	var creation := lower.contains("make me") or lower.contains("create me") or lower.contains("build me") or lower.contains("write me") or lower.contains("generate me") or lower.contains("make a") or lower.contains("create a") or lower.contains("build a") or lower.contains("generate a") or lower.contains("write a")
 	var artifact := lower.contains("script") or lower.contains("program") or lower.contains("app") or lower.contains("game") or lower.contains("project") or lower.contains("shader") or lower.contains("effect") or lower.contains("animation") or lower.contains("show") or lower.contains("visual") or lower.contains("firework") or lower.contains("background") or lower.contains("demo") or lower.contains("simulation")
 	return creation and artifact
+
+func artifact_build_summary(request: String) -> String:
+	var language := detect_code_language(request)
+	if language.is_empty():
+		language = "the best matching local language"
+	var lower := request.to_lower()
+	var kind := "application"
+	if lower.contains("game"):
+		kind = "playable game"
+	elif lower.contains("script"):
+		kind = "script"
+	elif lower.contains("simulation"):
+		kind = "simulation"
+	return "SAM will build a complete %s in %s, save it inside the active Playground session, validate the source, and keep execution behind the supervised Run button." % [kind, language]
+
+func show_artifact_build_confirmation(request: String) -> void:
+	if is_instance_valid(artifact_build_dialog):
+		artifact_build_dialog.queue_free()
+	var dialog := ConfirmationDialog.new()
+	artifact_build_dialog = dialog
+	dialog.title = "SAM-AI CODE BUILDER"
+	dialog.ok_button_text = "START BUILD"
+	dialog.cancel_button_text = "STOP / CANCEL"
+	dialog.min_size = Vector2i(760, 520)
+	dialog.dialog_text = ""
+	var label := dialog.get_label()
+	label.hide()
+	var content := label.get_parent()
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(720, 390)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	content.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 10)
+	scroll.add_child(box)
+	var heading := Label.new()
+	heading.text = "BUILD REVIEW • NOTHING RUNS UNTIL YOU APPROVE IT"
+	heading.add_theme_color_override("font_color", colors.cyan)
+	box.add_child(heading)
+	var summary := Label.new()
+	summary.text = artifact_build_summary(request)
+	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(summary)
+	var request_preview := TextEdit.new()
+	request_preview.text = request
+	request_preview.editable = false
+	request_preview.custom_minimum_size = Vector2(0, 145)
+	request_preview.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	box.add_child(request_preview)
+	var autofix := CheckBox.new()
+	autofix.text = "AUTO-FIX • validate generated source and send crashes back to SAM for repair"
+	autofix.button_pressed = artifact_auto_fix_enabled
+	box.add_child(autofix)
+	var influence_label := Label.new()
+	influence_label.text = "OPTIONAL BUILD INFLUENCE"
+	box.add_child(influence_label)
+	var influence := TextEdit.new()
+	influence.placeholder_text = "Add design choices, constraints, or corrections before the build starts…"
+	influence.custom_minimum_size = Vector2(0, 75)
+	influence.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	box.add_child(influence)
+	var suggestion := Label.new()
+	suggestion.text = "SAM suggestion: keep the project self-contained, validate every identifier, and preserve every requested feature."
+	suggestion.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	suggestion.add_theme_color_override("font_color", colors.muted)
+	box.add_child(suggestion)
+	var ask_button := Button.new()
+	ask_button.text = "✦ ASK SAM WHAT TO ADD"
+	ask_button.pressed.connect(func():
+		var language := detect_code_language(request)
+		influence.text = "Before returning the build, audit undefined names, imports, state transitions, event handling, scoring rules, restart behavior, and window sizing. Keep the implementation complete and runnable%s." % (" in " + language if not language.is_empty() else "")
+		suggestion.text = "SAM added a defensive implementation and validation pass. Edit it if you want, then start the build.")
+	box.add_child(ask_button)
+	dialog.confirmed.connect(func():
+		artifact_auto_fix_enabled = autofix.button_pressed
+		artifact_validation_retry_count = 0
+		var final_request := request
+		if not influence.text.strip_edges().is_empty():
+			final_request += "\n\nADDITIONAL BUILD INFLUENCE:\n" + influence.text.strip_edges()
+		artifact_build_confirmed_once = true
+		input_box.text = final_request
+		dialog.queue_free()
+		call_deferred("send_message"))
+	dialog.canceled.connect(func():
+		input_box.text = request
+		dialog.queue_free()
+		set_status("BUILD CANCELED • REQUEST KEPT IN COMPOSER", colors.amber))
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	style_security_dialog(dialog, colors.cyan)
+	dialog.popup_centered_clamped(Vector2i(820, 600), 0.92)
 
 func is_visual_creation_request(value: String) -> bool:
 	var lower := value.to_lower()
@@ -7885,9 +8019,21 @@ func validate_staged_text_file(path: String, contents: String) -> Dictionary:
 		if not FileAccess.file_exists(python_path):
 			return {"ok": true, "detail": "Python runtime unavailable; structural validation only."}
 		var output: Array = []
-		var check_code := "import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_text(encoding='utf-8'),str(p),'exec')"
-		var result := OS.execute(python_path, PackedStringArray(["-c", check_code, path]), output, true, false)
-		return {"ok": result == 0, "detail": "Python syntax check passed." if result == 0 else "Python syntax check failed: " + "\n".join(output).left(1200)}
+		var checker := ProjectSettings.globalize_path("res://tools/sam_python_check.py")
+		if not FileAccess.file_exists(checker):
+			# Exported builds keep helper sources inside the PCK. Materialize this
+			# read-only validator in user data so the private Python runtime can run it.
+			checker = ProjectSettings.globalize_path("user://sam_python_check.py")
+			var checker_file := FileAccess.open(checker, FileAccess.WRITE)
+			if checker_file:
+				checker_file.store_string(FileAccess.get_file_as_string("res://tools/sam_python_check.py"))
+				checker_file.close()
+		var result := OS.execute(python_path, PackedStringArray([checker, path]), output, true, false)
+		var detail := "\n".join(output).strip_edges()
+		var parsed = JSON.parse_string(detail)
+		if parsed is Dictionary:
+			return {"ok": bool(parsed.get("ok", false)), "detail": str(parsed.get("detail", "Python validation failed."))}
+		return {"ok": result == 0, "detail": "Python validation passed." if result == 0 else "Python validation failed: " + detail.left(1200)}
 	return {"ok": true, "detail": "Structural validation passed."}
 
 func file_revision_backup(path: String, reason: String) -> String:
@@ -7978,6 +8124,84 @@ func show_code_preview(code_id: int) -> void:
 	apply_theme_recursive(dialog)
 	style_security_dialog(dialog, colors.cyan)
 	dialog.popup_centered(Vector2i(960, 650))
+
+func extract_first_fenced_code(content: String) -> String:
+	var fence_start := content.find("```")
+	if fence_start < 0:
+		return ""
+	var first_newline := content.find("\n", fence_start + 3)
+	if first_newline < 0:
+		return ""
+	var fence_end := content.find("```", first_newline + 1)
+	if fence_end < 0:
+		return ""
+	return content.substr(first_newline + 1, fence_end - first_newline - 1).strip_edges(false, true)
+
+func show_artifact_result_dialog(code_id: int, path: String, validation: Dictionary) -> void:
+	if code_id < 0 or code_id >= rendered_code_blocks.size():
+		return
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "SAM-AI BUILD READY"
+	dialog.ok_button_text = "RUN / TEST"
+	dialog.cancel_button_text = "STOP / CLOSE"
+	dialog.min_size = Vector2i(760, 500)
+	dialog.dialog_text = ""
+	var label := dialog.get_label()
+	label.hide()
+	var content := label.get_parent()
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(720, 360)
+	box.add_theme_constant_override("separation", 10)
+	content.add_child(box)
+	var heading := Label.new()
+	heading.text = "✓ SOURCE CREATED" if bool(validation.get("ok", false)) else "⚠ SOURCE NEEDS REPAIR"
+	heading.add_theme_color_override("font_color", colors.green if bool(validation.get("ok", false)) else colors.amber)
+	box.add_child(heading)
+	var status := Label.new()
+	status.text = "%s\nFile: %s" % [str(validation.get("detail", "Validation not available.")), path]
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(status)
+	var preview := TextEdit.new()
+	preview.text = rendered_code_blocks[code_id]
+	preview.editable = false
+	preview.custom_minimum_size = Vector2(0, 190)
+	preview.wrap_mode = TextEdit.LINE_WRAPPING_NONE
+	box.add_child(preview)
+	var autofix := CheckBox.new()
+	autofix.text = "AUTO-FIX crashes and validation failures"
+	autofix.button_pressed = artifact_auto_fix_enabled
+	box.add_child(autofix)
+	var influence := LineEdit.new()
+	influence.placeholder_text = "Optional influence for another build (example: larger UI, add sound, change controls)…"
+	box.add_child(influence)
+	dialog.add_button("LIVE PREVIEW", false, "preview")
+	dialog.add_button("OPEN FOLDER", false, "folder")
+	dialog.add_button("SEND NEW INFLUENCE", false, "influence")
+	dialog.confirmed.connect(func():
+		artifact_auto_fix_enabled = autofix.button_pressed
+		dialog.queue_free()
+		request_run_rendered_code.call_deferred(code_id))
+	dialog.custom_action.connect(func(action: StringName):
+		artifact_auto_fix_enabled = autofix.button_pressed
+		if action == &"folder":
+			OS.shell_open(path.get_base_dir())
+		elif action == &"preview":
+			dialog.queue_free()
+			show_code_preview.call_deferred(code_id)
+		elif action == &"influence":
+			var extra := influence.text.strip_edges()
+			if extra.is_empty():
+				show_toast("Add an influence first")
+				return
+			artifact_build_confirmed_once = true
+			input_box.text = active_artifact_request + "\n\nNEW BUILD INFLUENCE:\n" + extra
+			dialog.queue_free()
+			call_deferred("send_message"))
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	style_security_dialog(dialog, colors.green if bool(validation.get("ok", false)) else colors.amber)
+	dialog.popup_centered_clamped(Vector2i(840, 620), 0.92)
 
 func prepare_rendered_code_in_workspace(code_id: int) -> String:
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
@@ -8168,6 +8392,16 @@ func request_run_rendered_code(code_id: int) -> void:
 	var path := prepare_rendered_code_in_workspace(code_id)
 	if path.is_empty():
 		show_toast("Could not create the playground project")
+		return
+	var validation := validate_staged_text_file(path, FileAccess.get_file_as_string(path))
+	if not bool(validation.get("ok", false)):
+		var detail := str(validation.get("detail", "Source validation failed."))
+		set_status("BUILD NEEDS REPAIR • RUN BLOCKED", colors.amber)
+		log_line("AUTO FIX", "Blocked invalid generated source before run: " + detail)
+		if artifact_auto_fix_enabled:
+			queue_artifact_auto_fix(path, language, detail)
+		else:
+			show_toast("Validation found an error • enable Auto-fix or edit the source")
 		return
 	var executable := "powershell.exe"
 	if language in ["python", "py"]:
@@ -8742,6 +8976,23 @@ func show_missing_dependency_dialog(module: String, path: String, language: Stri
 	style_security_dialog(dialog, colors.amber)
 	dialog.popup_centered(Vector2i(820, 560))
 
+func queue_artifact_auto_fix(path: String, language: String, detail: String) -> void:
+	if not FileAccess.file_exists(path):
+		return
+	if artifact_validation_retry_count >= 3:
+		set_status("AUTO-FIX PAUSED • MANUAL REVIEW NEEDED", colors.amber)
+		show_toast("Auto-fix stopped after 3 attempts • open Live Preview to edit or influence the build")
+		return
+	artifact_validation_retry_count += 1
+	artifact_repair_target_path = path
+	artifact_repair_language = language
+	attach_file(path)
+	input_box.text = "Repair the attached generated source. Return exactly one complete corrected file, preserve every requested feature, and do not use placeholders. Validation/runtime failure:\n\n%s" % detail.left(1800)
+	artifact_build_confirmed_once = true
+	set_status("AUTO-FIX • ASKING SAM TO REPAIR THE BUILD", colors.amber)
+	show_toast("Auto-fix caught an error • repair attempt %d of 3" % artifact_validation_retry_count)
+	call_deferred("send_message")
+
 func install_python_dependency(package: String, path: String, language: String) -> void:
 	var directory := path.get_base_dir()
 	var output_path := directory.path_join("dependency_install.log")
@@ -8790,6 +9041,9 @@ func place_run_error_in_composer(path: String, output: String) -> void:
 		if FileAccess.file_exists(candidate_path):
 			log_path = candidate_path
 			break
+	if artifact_auto_fix_enabled:
+		queue_artifact_auto_fix(path, path.get_extension(), "%s\nFull debug log: %s\n\n%s" % [error_summary, log_path, output.right(3500)])
+		return
 	attach_file(path)
 	var report := "Please fix the attached generated script and return the complete corrected file.\n\nError: %s\nFull debug log: %s" % [error_summary, log_path]
 	input_box.text = report
@@ -12561,7 +12815,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.3.1 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.4.0 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
