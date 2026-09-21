@@ -394,6 +394,7 @@ var cuda_install_dialog: AcceptDialog
 var cuda_install_status: Label
 var cuda_install_progress: ProgressBar
 var cuda_install_stage := 0
+var cuda_install_finished := false
 var cuda_install_root := ""
 var cuda_download_path := ""
 var startup_screen: Control
@@ -1219,9 +1220,12 @@ func show_cuda_install_progress() -> void:
 	cuda_install_dialog = AcceptDialog.new()
 	cuda_install_dialog.title = "SAM-AI CUDA INSTALLER"
 	cuda_install_dialog.exclusive = false
-	cuda_install_dialog.get_ok_button().visible = false
+	cuda_install_dialog.get_ok_button().visible = true
+	cuda_install_dialog.get_ok_button().text = "CANCEL DOWNLOAD"
+	cuda_install_finished = false
 	var box := VBoxContainer.new()
 	box.custom_minimum_size = Vector2(620, 150)
+	box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	box.add_theme_constant_override("separation", 14)
 	cuda_install_status = Label.new()
 	cuda_install_status.text = "Preparing official CUDA packages…"
@@ -1239,10 +1243,42 @@ func show_cuda_install_progress() -> void:
 	note.add_theme_color_override("font_color", colors.muted)
 	box.add_child(note)
 	cuda_install_dialog.add_child(box)
+	cuda_install_dialog.confirmed.connect(close_or_cancel_cuda_install)
+	cuda_install_dialog.canceled.connect(cancel_cuda_runtime_install)
 	add_child(cuda_install_dialog)
 	apply_theme_recursive(cuda_install_dialog)
 	style_security_dialog(cuda_install_dialog, colors.cyan)
-	cuda_install_dialog.popup_centered(Vector2i(700, 270))
+	# Keep this utility dialog compact on every DPI, resolution, and window size.
+	# A hard maximum prevents custom content/theme minimums from pushing its
+	# controls beyond the usable desktop as happened in v1.2.5.
+	var usable := DisplayServer.screen_get_usable_rect(get_window().current_screen).size
+	var desired := Vector2i(mini(700, usable.x - 48), mini(300, usable.y - 48))
+	cuda_install_dialog.min_size = Vector2i(mini(480, desired.x), mini(220, desired.y))
+	cuda_install_dialog.max_size = desired
+	cuda_install_dialog.unresizable = true
+	cuda_install_dialog.popup_centered(desired)
+
+func close_or_cancel_cuda_install() -> void:
+	if cuda_install_finished:
+		if is_instance_valid(cuda_install_dialog):
+			cuda_install_dialog.queue_free()
+		cuda_install_dialog = null
+		return
+	cancel_cuda_runtime_install()
+
+func cancel_cuda_runtime_install() -> void:
+	if cuda_install_finished:
+		return
+	set_privacy_activity(false)
+	if is_instance_valid(cuda_runtime_request):
+		cuda_runtime_request.cancel_request()
+		cuda_runtime_request.queue_free()
+	cuda_runtime_request = null
+	set_cuda_install_controls_enabled(true)
+	if is_instance_valid(cuda_install_dialog):
+		cuda_install_dialog.queue_free()
+	cuda_install_dialog = null
+	show_toast("CUDA installation canceled • CPU mode is unchanged")
 
 func start_cuda_package_download(url: String, destination: String, status: String) -> void:
 	if not url.begins_with("https://"):
@@ -1363,6 +1399,7 @@ func complete_cuda_runtime_install() -> void:
 	setup_server_path.text = server_path
 	set_privacy_activity(false)
 	set_cuda_install_controls_enabled(true)
+	cuda_install_finished = true
 	if is_instance_valid(cuda_install_status):
 		cuda_install_status.text = "✓ NVIDIA CUDA acceleration installed and selected. SAM will verify it when the model starts."
 	if is_instance_valid(cuda_install_progress):
@@ -1382,6 +1419,7 @@ func fail_cuda_runtime_install(message: String) -> void:
 		cuda_runtime_request.queue_free()
 	cuda_runtime_request = null
 	set_cuda_install_controls_enabled(true)
+	cuda_install_finished = true
 	if is_instance_valid(cuda_install_status):
 		cuda_install_status.text = "✕ %s\n\nCPU mode is unchanged and remains available. You can retry from Modules." % message
 	if is_instance_valid(cuda_install_progress):
@@ -12402,7 +12440,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.5 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.6 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
@@ -14846,7 +14884,10 @@ func show_enable_pc_commands_confirmation() -> void:
 	dialog.popup_centered(Vector2i(760, 430))
 
 func style_security_dialog(dialog: AcceptDialog, accent: Color) -> void:
-	dialog.min_size = Vector2i(680, 350)
+	var usable := DisplayServer.screen_get_usable_rect(get_window().current_screen).size
+	var safe_max := Vector2i(maxi(420, usable.x - 48), maxi(260, usable.y - 48))
+	dialog.min_size = Vector2i(mini(680, safe_max.x), mini(350, safe_max.y))
+	dialog.max_size = safe_max
 	dialog.unresizable = false
 	dialog.transparent_bg = true
 	var label := dialog.get_label()

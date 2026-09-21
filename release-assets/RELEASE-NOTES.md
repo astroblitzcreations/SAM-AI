@@ -1,4 +1,11 @@
-# SAM-AI v1.2.5
+# SAM-AI v1.2.6
+
+## Fixed in v1.2.6
+
+- The CUDA installer is now a compact, fixed-size progress window instead of expanding vertically beyond the desktop.
+- Cancel Download and Done remain visible and clickable at every supported resolution and Windows scaling level.
+- Closing the CUDA installer during a download now cancels cleanly and leaves CPU mode unchanged.
+- Every SAM-styled dialog now receives a global maximum size based on the usable desktop, preventing future dialogs from extending beyond the screen.
 
 ## New in v1.2.5
 

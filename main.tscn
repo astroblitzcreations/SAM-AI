@@ -55,7 +55,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.302, 0.933, 0.918, 1)
 theme_override_font_sizes/font_size = 22
-text = "SAM-AI v1.2.5 by forge & Makazhan"
+text = "SAM-AI v1.2.6 by forge & Makazhan"
 
 [node name="StatusDot" type="Label" parent="Page/Header" unique_id=429073866]
 layout_mode = 2
