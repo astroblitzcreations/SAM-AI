@@ -6,6 +6,8 @@ var stalled_timer := 0.0
 var state_timer := 0.0
 var cat_state := "building"
 var cat_dir := 1.0
+var cat_target_x := 0.42
+var cat_is_moving := true
 var built_stage := 0
 var storm_active := false
 var lightning_timer := 0.0
@@ -18,6 +20,7 @@ var steam: GPUParticles3D
 var lightning: OmniLight3D
 var progress_label: Label
 var state_label: Label
+var text_column: VBoxContainer
 
 func _ready() -> void:
 	custom_minimum_size = Vector2(360, 68)
@@ -26,11 +29,22 @@ func _ready() -> void:
 	build_scene()
 
 func build_scene() -> void:
+	var layout := HBoxContainer.new()
+	layout.add_theme_constant_override("separation", 8)
+	layout.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(layout)
+	text_column = VBoxContainer.new()
+	text_column.custom_minimum_size = Vector2(132, 0)
+	text_column.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	layout.add_child(text_column)
+	build_labels()
 	var container := SubViewportContainer.new()
 	container.stretch = true
-	container.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	container.custom_minimum_size = Vector2(220, 68)
+	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(container)
+	layout.add_child(container)
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(720, 136)
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
@@ -47,9 +61,9 @@ func build_scene() -> void:
 	environment.environment = env
 	world.add_child(environment)
 	var camera := Camera3D.new()
-	camera.position = Vector3(0.25, 1.15, 4.15)
-	camera.look_at_from_position(camera.position, Vector3(0.25, 0.35, 0.0))
-	camera.fov = 34.0
+	camera.position = Vector3(0.30, 0.92, 3.15)
+	camera.look_at_from_position(camera.position, Vector3(0.30, 0.35, 0.0))
+	camera.fov = 31.0
 	world.add_child(camera)
 	var key := DirectionalLight3D.new()
 	key.rotation_degrees = Vector3(-35, -25, 0)
@@ -66,15 +80,14 @@ func build_scene() -> void:
 	var cat_scene := load("res://assets/models/builder_cat/builder_cat_run.glb") as PackedScene
 	if cat_scene == null:
 		push_warning("Builder cat model could not be loaded; compact monitor will continue without the 3D cat.")
-		build_labels()
 		return
 	cat_root = cat_scene.instantiate() as Node3D
 	cat_root.position = Vector3(-0.85, 0.08, 0.15)
-	cat_root.scale = Vector3.ONE * 1.65
+	cat_root.scale = Vector3.ONE * 2.15
+	cat_root.rotation_degrees = Vector3(0, 90, 0)
 	world.add_child(cat_root)
 	animation_player = find_animation_player(cat_root)
 	play_run(0.65)
-	build_labels()
 
 func build_ground_and_house(world: Node3D) -> void:
 	add_box(world, Vector3(0, -0.02, 0), Vector3(4.8, 0.07, 1.15), Color("#18323b"))
@@ -151,15 +164,14 @@ func material(color: Color) -> StandardMaterial3D:
 
 func build_labels() -> void:
 	progress_label = Label.new()
-	progress_label.position = Vector2(12, 5)
 	progress_label.add_theme_color_override("font_color", Color.WHITE)
 	progress_label.add_theme_font_size_override("font_size", 12)
-	add_child(progress_label)
+	text_column.add_child(progress_label)
 	state_label = Label.new()
-	state_label.position = Vector2(12, 23)
 	state_label.add_theme_color_override("font_color", Color("#7feaf2"))
 	state_label.add_theme_font_size_override("font_size", 10)
-	add_child(state_label)
+	state_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	text_column.add_child(state_label)
 	update_text()
 
 func set_progress(value: float) -> void:
@@ -192,16 +204,20 @@ func _process(delta: float) -> void:
 	elif state_timer > 4.2 and _progress < 100.0:
 		set_state("coffee" if stalled_timer > 7.0 else ("walking" if cat_state == "building" else "building"))
 	match cat_state:
-		"building", "walking":
-			cat_root.position.x += cat_dir * delta * 0.24
-			if cat_root.position.x > 0.58: cat_dir = -1.0
-			if cat_root.position.x < -0.88: cat_dir = 1.0
+		"building":
+			cat_is_moving = false
+		"walking":
+			cat_is_moving = true
+			cat_root.position.x = move_toward(cat_root.position.x, cat_target_x, delta * 0.72)
+			if absf(cat_root.position.x - cat_target_x) < 0.025:
+				cat_target_x = -0.78 if cat_target_x > 0.0 else 0.42
+				cat_dir = -1.0 if cat_target_x < cat_root.position.x else 1.0
 		"running", "scared":
 			cat_root.position.x = move_toward(cat_root.position.x, 1.18, delta * 1.8)
 			if cat_root.position.x >= 1.12: set_state("shelter")
 		"coffee": cat_root.position.x = move_toward(cat_root.position.x, -0.12, delta * 0.45)
 		"celebrate": cat_root.position.y = 0.08 + abs(sin(Time.get_ticks_msec() / 130.0)) * 0.08
-	cat_root.rotation_degrees.y = 180 if cat_dir < 0 else 0
+	cat_root.rotation_degrees = Vector3(0, -90 if cat_dir < 0 else 90, 0)
 	update_text()
 
 func set_storm(enabled: bool) -> void:

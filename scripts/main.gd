@@ -7964,9 +7964,8 @@ func show_artifact_compact_monitor() -> void:
 	var card := PanelContainer.new()
 	artifact_monitor_compact = card
 	card.z_index = 45
-	card.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	card.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	card.position = Vector2(-440, -142)
+	card.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
+	card.position = Vector2(-440, -62)
 	card.size = Vector2(420, 112)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.025, 0.06, 0.105, 0.98)
@@ -7983,7 +7982,7 @@ func show_artifact_compact_monitor() -> void:
 	row.add_theme_constant_override("separation", 8)
 	compact_stack.add_child(row)
 	artifact_monitor_compact_label = Label.new()
-	artifact_monitor_compact_label.text = "BUILD 0%"
+	artifact_monitor_compact_label.text = "SAM BUILD"
 	artifact_monitor_compact_label.custom_minimum_size.x = 82
 	artifact_monitor_compact_label.add_theme_color_override("font_color", colors.cyan)
 	row.add_child(artifact_monitor_compact_label)
@@ -8013,8 +8012,6 @@ func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: i
 		artifact_monitor_progress.value = percent
 	if is_instance_valid(artifact_monitor_compact_progress):
 		artifact_monitor_compact_progress.value = percent
-	if is_instance_valid(artifact_monitor_compact_label):
-		artifact_monitor_compact_label.text = "BUILD %d%%" % percent
 	if is_instance_valid(artifact_monitor_cat):
 		artifact_monitor_cat.call("set_progress", float(percent))
 	if is_instance_valid(artifact_monitor_label):
@@ -8038,7 +8035,6 @@ func set_artifact_monitor_phase(title: String, detail: String, percent := -1) ->
 		artifact_monitor_progress.value = percent
 	if percent >= 0 and is_instance_valid(artifact_monitor_compact_progress):
 		artifact_monitor_compact_progress.value = percent
-		artifact_monitor_compact_label.text = "BUILD %d%%" % percent
 		if is_instance_valid(artifact_monitor_cat):
 			artifact_monitor_cat.call("set_progress", float(percent))
 
@@ -8366,20 +8362,41 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
 		return
 	close_artifact_build_monitor()
-	var dialog := ConfirmationDialog.new()
+	var dialog := Window.new()
 	dialog.title = "SAM-AI BUILD READY"
-	dialog.ok_button_text = "RUN / TEST"
-	dialog.cancel_button_text = "STOP / CLOSE"
-	dialog.min_size = Vector2i(700, 440)
+	dialog.min_size = Vector2i(620, 420)
 	dialog.max_size = Vector2i(900, 680)
-	dialog.dialog_text = ""
-	var label := dialog.get_label()
-	label.hide()
-	var content := label.get_parent()
+	dialog.size = Vector2i(780, 540)
+	dialog.transient = true
+	dialog.exclusive = true
+	dialog.unresizable = false
+	dialog.close_requested.connect(dialog.queue_free)
+	var panel := PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color("#081522")
+	panel_style.border_color = colors.green if bool(validation.get("ok", false)) else colors.amber
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(12)
+	panel_style.shadow_color = Color(0, 0.8, 1, 0.24)
+	panel_style.shadow_size = 16
+	panel.add_theme_stylebox_override("panel", panel_style)
+	dialog.add_child(panel)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 18)
+	margin.add_theme_constant_override("margin_right", 18)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
+	panel.add_child(margin)
 	var box := VBoxContainer.new()
-	box.custom_minimum_size = Vector2(660, 300)
 	box.add_theme_constant_override("separation", 10)
-	content.add_child(box)
+	margin.add_child(box)
+	var title := Label.new()
+	title.text = "SAM-AI BUILD READY"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_color_override("font_color", colors.green if bool(validation.get("ok", false)) else colors.amber)
+	box.add_child(title)
 	var heading := Label.new()
 	heading.text = "✓ SOURCE CREATED" if bool(validation.get("ok", false)) else "⚠ SOURCE NEEDS REPAIR"
 	heading.add_theme_color_override("font_color", colors.green if bool(validation.get("ok", false)) else colors.amber)
@@ -8391,18 +8408,11 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	var preview := TextEdit.new()
 	preview.text = rendered_code_blocks[code_id]
 	preview.editable = false
-	preview.custom_minimum_size = Vector2(640, 140)
+	preview.custom_minimum_size = Vector2(0, 150)
 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	preview.wrap_mode = TextEdit.LINE_WRAPPING_NONE
-	var preview_scroll := ScrollContainer.new()
-	preview_scroll.custom_minimum_size = Vector2(0, 150)
-	preview_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	preview_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	preview_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	preview_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	preview_scroll.add_child(preview)
-	box.add_child(preview_scroll)
+	box.add_child(preview)
 	var autofix := CheckBox.new()
 	autofix.text = "AUTO-FIX crashes and validation failures"
 	autofix.button_pressed = artifact_auto_fix_enabled
@@ -8410,34 +8420,31 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	var influence := LineEdit.new()
 	influence.placeholder_text = "Optional influence for another build (example: larger UI, add sound, change controls)…"
 	box.add_child(influence)
-	dialog.add_button("LIVE PREVIEW", false, "preview")
-	dialog.add_button("OPEN FOLDER", false, "folder")
-	dialog.add_button("SEND NEW INFLUENCE", false, "influence")
-	dialog.confirmed.connect(func():
+	var actions := HFlowContainer.new()
+	actions.add_theme_constant_override("h_separation", 8)
+	actions.add_theme_constant_override("v_separation", 6)
+	box.add_child(actions)
+	var run_button := make_button("▶ RUN / TEST", func():
 		artifact_auto_fix_enabled = autofix.button_pressed
 		dialog.queue_free()
-		request_run_rendered_code.call_deferred(code_id))
-	dialog.custom_action.connect(func(action: StringName):
+		request_run_rendered_code.call_deferred(code_id), colors.green)
+	actions.add_child(run_button)
+	actions.add_child(make_button("LIVE PREVIEW", func(): dialog.queue_free(); show_code_preview.call_deferred(code_id), colors.cyan))
+	actions.add_child(make_button("OPEN FOLDER", func(): OS.shell_open(path.get_base_dir()), colors.cyan))
+	actions.add_child(make_button("SEND INFLUENCE", func():
+		var extra := influence.text.strip_edges()
+		if extra.is_empty():
+			show_toast("Add an influence first")
+			return
 		artifact_auto_fix_enabled = autofix.button_pressed
-		if action == &"folder":
-			OS.shell_open(path.get_base_dir())
-		elif action == &"preview":
-			dialog.queue_free()
-			show_code_preview.call_deferred(code_id)
-		elif action == &"influence":
-			var extra := influence.text.strip_edges()
-			if extra.is_empty():
-				show_toast("Add an influence first")
-				return
-			artifact_build_confirmed_once = true
-			input_box.text = active_artifact_request + "\n\nNEW BUILD INFLUENCE:\n" + extra
-			dialog.queue_free()
-			call_deferred("send_message"))
-	dialog.canceled.connect(dialog.queue_free)
+		artifact_build_confirmed_once = true
+		input_box.text = active_artifact_request + "\n\nNEW BUILD INFLUENCE:\n" + extra
+		dialog.queue_free()
+		call_deferred("send_message"), colors.amber))
+	actions.add_child(make_button("CLOSE", dialog.queue_free, colors.muted))
 	add_child(dialog)
 	apply_theme_recursive(dialog)
-	style_security_dialog(dialog, colors.green if bool(validation.get("ok", false)) else colors.amber)
-	dialog.popup_centered_clamped(Vector2i(800, 560), 0.88)
+	dialog.popup_centered_clamped(Vector2i(780, 540), 0.84)
 
 func prepare_rendered_code_in_workspace(code_id: int) -> String:
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
