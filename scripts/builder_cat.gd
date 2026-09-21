@@ -2,108 +2,249 @@ class_name SamBuilderCat
 extends Control
 
 var _progress := 0.0
-var cat_x := 76.0
-var cat_dir := 1
-var cat_state := "building"
-var state_timer := 0.0
 var stalled_timer := 0.0
-var last_progress := -1.0
-var house_bricks := 0
-var is_raining := false
-var rain_drops: Array[Vector2] = []
+var state_timer := 0.0
+var cat_state := "building"
+var cat_dir := 1.0
+var built_stage := 0
+var storm_active := false
+var lightning_timer := 0.0
+var cat_root: Node3D
+var animation_player: AnimationPlayer
+var house_stages: Array[Node3D] = []
+var smoke: GPUParticles3D
+var rain: GPUParticles3D
+var steam: GPUParticles3D
+var lightning: OmniLight3D
+var progress_label: Label
+var state_label: Label
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(360, 62)
+	custom_minimum_size = Vector2(360, 68)
+	clip_contents = true
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for index in range(18):
-		rain_drops.append(Vector2(fmod(float(index * 47), 360.0), fmod(float(index * 29), 62.0)))
-	set_process(true)
+	build_scene()
+
+func build_scene() -> void:
+	var container := SubViewportContainer.new()
+	container.stretch = true
+	container.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(container)
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(720, 136)
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	container.add_child(viewport)
+	var world := Node3D.new()
+	viewport.add_child(world)
+	var environment := WorldEnvironment.new()
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color("#07131f")
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color("#8ac6d1")
+	env.ambient_light_energy = 0.72
+	environment.environment = env
+	world.add_child(environment)
+	var camera := Camera3D.new()
+	camera.position = Vector3(0.25, 1.15, 4.15)
+	camera.look_at_from_position(camera.position, Vector3(0.25, 0.35, 0.0))
+	camera.fov = 34.0
+	world.add_child(camera)
+	var key := DirectionalLight3D.new()
+	key.rotation_degrees = Vector3(-35, -25, 0)
+	key.light_color = Color("#bdefff")
+	key.light_energy = 1.15
+	world.add_child(key)
+	lightning = OmniLight3D.new()
+	lightning.position = Vector3(0, 2.2, 1.4)
+	lightning.light_color = Color("#d9eeff")
+	lightning.omni_range = 8.0
+	world.add_child(lightning)
+	build_ground_and_house(world)
+	build_particles(world)
+	var cat_scene := load("res://assets/models/builder_cat/builder_cat_run.glb") as PackedScene
+	if cat_scene == null:
+		push_warning("Builder cat model could not be loaded; compact monitor will continue without the 3D cat.")
+		build_labels()
+		return
+	cat_root = cat_scene.instantiate() as Node3D
+	cat_root.position = Vector3(-0.85, 0.08, 0.15)
+	cat_root.scale = Vector3.ONE * 1.65
+	world.add_child(cat_root)
+	animation_player = find_animation_player(cat_root)
+	play_run(0.65)
+	build_labels()
+
+func build_ground_and_house(world: Node3D) -> void:
+	add_box(world, Vector3(0, -0.02, 0), Vector3(4.8, 0.07, 1.15), Color("#18323b"))
+	var stages := [
+		[Vector3(1.22, 0.20, 0), Vector3(0.65, 0.40, 0.62), Color("#895a39"), 0.0],
+		[Vector3(1.22, 0.58, 0), Vector3(0.65, 0.35, 0.62), Color("#a66f45"), 0.0],
+		[Vector3(1.04, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), 24.0],
+		[Vector3(1.40, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), -24.0]
+	]
+	for data in stages:
+		var part := add_box(world, data[0], data[1], data[2])
+		part.rotation_degrees.z = data[3]
+		part.visible = false
+		house_stages.append(part)
+	var door := add_box(world, Vector3(1.22, 0.17, 0.325), Vector3(0.20, 0.31, 0.04), Color("#1b1114"))
+	var door_mat := door.material_override as StandardMaterial3D
+	door_mat.emission_enabled = true
+	door_mat.emission = Color("#ffb84d")
+	door_mat.emission_energy_multiplier = 1.6
+
+func add_box(parent: Node3D, position: Vector3, box_size: Vector3, color: Color) -> MeshInstance3D:
+	var part := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = box_size
+	part.mesh = mesh
+	part.position = position
+	part.material_override = material(color)
+	parent.add_child(part)
+	return part
+
+func build_particles(world: Node3D) -> void:
+	smoke = make_particles(Color(0.72, 0.78, 0.82, 0.60), 22, 0.85, 0.055)
+	smoke.position = Vector3(0.65, 0.30, 0.2)
+	smoke.one_shot = true
+	world.add_child(smoke)
+	rain = make_particles(Color(0.35, 0.68, 1.0, 0.70), 80, 1.1, 0.018)
+	var rain_process := rain.process_material as ParticleProcessMaterial
+	rain_process.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	rain_process.emission_box_extents = Vector3(2.2, 0.1, 0.5)
+	rain_process.direction = Vector3(-0.15, -1.0, 0)
+	rain_process.initial_velocity_min = 2.2
+	rain_process.initial_velocity_max = 3.0
+	rain.position = Vector3(0, 1.55, 0.25)
+	world.add_child(rain)
+	steam = make_particles(Color(0.82, 0.88, 0.90, 0.38), 10, 1.2, 0.025)
+	steam.position = Vector3(-0.15, 0.48, 0.20)
+	world.add_child(steam)
+	smoke.emitting = false
+	rain.emitting = false
+	steam.emitting = false
+
+func make_particles(color: Color, amount: int, lifetime: float, particle_size: float) -> GPUParticles3D:
+	var particles := GPUParticles3D.new()
+	particles.amount = amount
+	particles.lifetime = lifetime
+	var process := ParticleProcessMaterial.new()
+	process.direction = Vector3(0, 1, 0)
+	process.spread = 28.0
+	process.initial_velocity_min = 0.35
+	process.initial_velocity_max = 0.75
+	particles.process_material = process
+	var quad := QuadMesh.new()
+	quad.size = Vector2(particle_size, particle_size)
+	quad.material = material(color)
+	particles.draw_pass_1 = quad
+	return particles
+
+func material(color: Color) -> StandardMaterial3D:
+	var value := StandardMaterial3D.new()
+	value.albedo_color = color
+	value.roughness = 0.8
+	value.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if color.a < 0.99 else BaseMaterial3D.TRANSPARENCY_DISABLED
+	return value
+
+func build_labels() -> void:
+	progress_label = Label.new()
+	progress_label.position = Vector2(12, 5)
+	progress_label.add_theme_color_override("font_color", Color.WHITE)
+	progress_label.add_theme_font_size_override("font_size", 12)
+	add_child(progress_label)
+	state_label = Label.new()
+	state_label.position = Vector2(12, 23)
+	state_label.add_theme_color_override("font_color", Color("#7feaf2"))
+	state_label.add_theme_font_size_override("font_size", 10)
+	add_child(state_label)
+	update_text()
 
 func set_progress(value: float) -> void:
-	var next_progress := clampf(value, 0.0, 100.0)
-	if not is_equal_approx(next_progress, _progress):
-		last_progress = _progress
-		stalled_timer = 0.0
-	_progress = next_progress
-	house_bricks = int((_progress / 100.0) * 12.0)
-	is_raining = _progress >= 58.0 and _progress < 78.0
-	if _progress >= 100.0:
-		cat_state = "celebrate"
-	queue_redraw()
+	var next := clampf(value, 0.0, 100.0)
+	if not is_equal_approx(next, _progress): stalled_timer = 0.0
+	_progress = next
+	var new_stage := mini(4, int(ceil(_progress / 25.0)))
+	if new_stage > built_stage:
+		built_stage = new_stage
+		if is_instance_valid(smoke): smoke.restart()
+	for index in range(house_stages.size()): house_stages[index].visible = index < new_stage
+	if not is_instance_valid(rain) or not is_instance_valid(cat_root):
+		update_text()
+		return
+	set_storm(_progress >= 52.0 and _progress < 82.0)
+	if _progress >= 100.0: set_state("celebrate")
+	update_text()
 
 func _process(delta: float) -> void:
+	if not is_instance_valid(cat_root): return
 	state_timer += delta
 	stalled_timer += delta
-	if state_timer > 3.6 and _progress < 100.0:
-		state_timer = 0.0
-		var cycle := int(Time.get_ticks_msec() / 3600) % 10
-		if is_raining:
-			cat_state = "rain_dash"
-		elif stalled_timer > 8.0:
-			cat_state = "coffee"
-		elif cycle < 5:
-			cat_state = "building"
-		elif cycle < 8:
-			cat_state = "walking"
-		else:
-			cat_state = "coffee"
-	if cat_state in ["walking", "building"]:
-		cat_x += cat_dir * delta * 30.0
-		if cat_x > 238.0:
-			cat_dir = -1
-		elif cat_x < 70.0:
-			cat_dir = 1
-	elif cat_state == "rain_dash":
-		cat_dir = 1
-		cat_x = minf(cat_x + delta * 95.0, 320.0)
-	elif cat_state == "celebrate":
-		cat_x = 278.0 + sin(Time.get_ticks_msec() / 110.0) * 5.0
-	if is_raining:
-		for index in range(rain_drops.size()):
-			var drop := rain_drops[index]
-			drop.y += delta * 120.0
-			drop.x -= delta * 24.0
-			if drop.y > size.y:
-				drop.y = 0.0
-				drop.x = fmod(float(index * 53 + Time.get_ticks_msec() / 17), maxf(size.x, 1.0))
-			rain_drops[index] = drop
-	queue_redraw()
+	if lightning.light_energy > 0.0: lightning.light_energy = move_toward(lightning.light_energy, 0.0, delta * 14.0)
+	if storm_active:
+		lightning_timer -= delta
+		if lightning_timer <= 0.0:
+			lightning.light_energy = 7.5
+			lightning_timer = 3.2
+			set_state("scared")
+	elif state_timer > 4.2 and _progress < 100.0:
+		set_state("coffee" if stalled_timer > 7.0 else ("walking" if cat_state == "building" else "building"))
+	match cat_state:
+		"building", "walking":
+			cat_root.position.x += cat_dir * delta * 0.24
+			if cat_root.position.x > 0.58: cat_dir = -1.0
+			if cat_root.position.x < -0.88: cat_dir = 1.0
+		"running", "scared":
+			cat_root.position.x = move_toward(cat_root.position.x, 1.18, delta * 1.8)
+			if cat_root.position.x >= 1.12: set_state("shelter")
+		"coffee": cat_root.position.x = move_toward(cat_root.position.x, -0.12, delta * 0.45)
+		"celebrate": cat_root.position.y = 0.08 + abs(sin(Time.get_ticks_msec() / 130.0)) * 0.08
+	cat_root.rotation_degrees.y = 180 if cat_dir < 0 else 0
+	update_text()
 
-func _draw() -> void:
-	var rect := get_rect()
-	draw_rect(Rect2(Vector2.ZERO, rect.size), Color("#081522"), true)
-	draw_line(Vector2(0, rect.size.y - 9), Vector2(rect.size.x, rect.size.y - 9), Color("#244757"), 2.0)
-	var site_origin := Vector2(12, rect.size.y - 11)
-	for index in range(house_bricks):
-		var bx := site_origin.x + float(index % 4) * 11.0
-		var by := site_origin.y - float(index / 4) * 8.0 - 7.0
-		draw_rect(Rect2(Vector2(bx, by), Vector2(10, 7)), Color("#ad794b"), true)
-		draw_rect(Rect2(Vector2(bx, by), Vector2(10, 7)), Color("#53351f"), false, 1.0)
-	var house_pos := Vector2(rect.size.x - 48, rect.size.y - 35)
-	draw_rect(Rect2(house_pos, Vector2(38, 26)), Color("#8c5935"), true)
-	var roof := PackedVector2Array([house_pos + Vector2(-4, 0), house_pos + Vector2(19, -15), house_pos + Vector2(42, 0)])
-	draw_colored_polygon(roof, Color("#d84a55"))
-	var cat_inside := (is_raining and cat_x >= rect.size.x - 54) or _progress >= 100.0
-	draw_rect(Rect2(house_pos + Vector2(13, 11), Vector2(12, 15)), Color("#ffcc5c") if cat_inside else Color("#26150f"), true)
-	if is_raining:
-		for drop in rain_drops:
-			draw_line(drop, drop + Vector2(-3, 7), Color(0.40, 0.68, 0.95, 0.72), 1.0)
-	var cat_pos := Vector2(cat_x, rect.size.y - 20)
-	if not (is_raining and cat_x >= rect.size.x - 54):
-		draw_circle(cat_pos, 7.0, Color("#e69a4c"))
-		draw_colored_polygon(PackedVector2Array([cat_pos + Vector2(-6, -4), cat_pos + Vector2(-5, -12), cat_pos + Vector2(-1, -7)]), Color("#e69a4c"))
-		draw_colored_polygon(PackedVector2Array([cat_pos + Vector2(6, -4), cat_pos + Vector2(5, -12), cat_pos + Vector2(1, -7)]), Color("#e69a4c"))
-		draw_circle(cat_pos + Vector2(-2, -1), 1.0, Color("#17202a"))
-		draw_circle(cat_pos + Vector2(2, -1), 1.0, Color("#17202a"))
-		if cat_state == "building":
-			var swing := -5.0 if int(Time.get_ticks_msec() / 180) % 2 == 0 else 2.0
-			draw_line(cat_pos + Vector2(cat_dir * 6, 1), cat_pos + Vector2(cat_dir * 13, swing), Color("#d7e3e8"), 2.0)
-		elif cat_state == "coffee":
-			draw_rect(Rect2(cat_pos + Vector2(cat_dir * 7, 1), Vector2(5, 5)), Color("#e8f4f6"), true)
-	var font := ThemeDB.fallback_font
-	draw_string(font, Vector2(60, 17), "BUILD %d%%" % int(_progress), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
-	var status := "Building the house…"
-	if cat_state == "coffee": status = "Tiny coffee break"
-	elif cat_state == "rain_dash": status = "Rain! Running for shelter"
-	elif cat_state == "celebrate": status = "Build complete!"
-	draw_string(font, Vector2(60, 34), status, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("#7feaf2"))
+func set_storm(enabled: bool) -> void:
+	if enabled == storm_active: return
+	storm_active = enabled
+	rain.emitting = enabled
+	lightning_timer = 0.45
+	if enabled: set_state("running")
+	else:
+		lightning.light_energy = 0.0
+		set_state("building")
+
+func set_state(next: String) -> void:
+	cat_state = next
+	state_timer = 0.0
+	steam.emitting = next == "coffee"
+	cat_root.visible = next != "shelter"
+	if next in ["running", "scared", "building", "walking", "celebrate"]: play_run(2.0 if next in ["running", "scared"] else 0.7)
+	elif is_instance_valid(animation_player): animation_player.pause()
+
+func find_animation_player(root: Node) -> AnimationPlayer:
+	if root is AnimationPlayer: return root
+	for child in root.get_children():
+		var found := find_animation_player(child)
+		if found != null: return found
+	return null
+
+func play_run(speed := 1.0) -> void:
+	if not is_instance_valid(animation_player): return
+	for animation_name in animation_player.get_animation_list():
+		if str(animation_name).to_lower() != "reset":
+			animation_player.speed_scale = speed
+			animation_player.play(animation_name)
+			return
+
+func update_text() -> void:
+	if not is_instance_valid(progress_label): return
+	progress_label.text = "BUILD %d%%" % int(_progress)
+	var message := "Building with the run rig…"
+	match cat_state:
+		"coffee": message = "Coffee and steam break"
+		"running": message = "Rain! Running for shelter"
+		"scared": message = "Thunder!"
+		"shelter": message = "Safe inside the glowing house"
+		"celebrate": message = "Build complete!"
+	state_label.text = message
