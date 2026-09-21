@@ -178,8 +178,14 @@ var artifact_build_confirmed_once := false
 var artifact_auto_fix_enabled := true
 var artifact_repair_target_path := ""
 var artifact_repair_language := ""
+var artifact_repair_prompt := ""
 var artifact_validation_retry_count := 0
+var artifact_total_retry_count := 0
 var artifact_build_dialog: Window
+var artifact_monitor: Window
+var artifact_monitor_label: Label
+var artifact_monitor_progress: ProgressBar
+var artifact_monitor_detail: Label
 var active_image_edit_action := false
 var stream_retry_count := 0
 var stream_retry_not_before_ms := 0
@@ -3055,13 +3061,11 @@ func drain_render_buffer() -> void:
 			# once and supplies the normal View/Save/Edit/Run action bar.
 			render_buffer = ""
 			if response_text.length() >= artifact_progress_next_chars:
-				var frames: Array[String] = ["◐", "◓", "◑", "◒"]
-				var frame: String = frames[int(Time.get_ticks_msec() / 180) % frames.size()]
 				var source_lines := response_text.count("\n") + 1
 				var approximate_tokens := int(ceil(float(response_text.length()) / 3.2))
 				var budget := maxi(artifact_output_token_budget, 1)
 				var percent := mini(100, int(round(float(approximate_tokens) / float(budget) * 100.0)))
-				thinking_indicator.text = "%s BUILDING COMPLETE FILE   %d chars • %d lines • ~%d / %d tokens • %d%%" % [frame, response_text.length(), source_lines, approximate_tokens, budget, percent]
+				update_artifact_build_monitor(response_text.length(), source_lines, approximate_tokens, budget, percent)
 				artifact_progress_next_chars = response_text.length() + artifact_progress_step
 			set_status("BUILDING COMPLETE FILE • %d CHARS" % response_text.length(), colors.green)
 			if stream_finished:
@@ -3485,6 +3489,7 @@ func send_message() -> void:
 	active_artifact_builder_mode = artifact_builder_mode
 	active_image_edit_action = artifact_builder_mode and not attached_image_path.is_empty() and is_executable_action_request(request_text)
 	if artifact_builder_mode:
+		show_artifact_build_monitor.call_deferred()
 		if not artifact_retry_in_progress and artifact_repair_target_path.is_empty():
 			active_artifact_request = request_text
 			artifact_auto_retry_count = 0
@@ -4408,6 +4413,12 @@ func save_automatic_repair_lesson(answer: String) -> void:
 	pending_repair_language = ""
 
 func update_thinking_animation() -> void:
+	if active_artifact_builder_mode:
+		set_status("CODE BUILDER ACTIVE • SEE BUILD MONITOR", colors.green)
+		if is_instance_valid(thinking_indicator):
+			thinking_indicator.text = "CODE BUILDER ACTIVE • progress is shown in the Build Monitor"
+			thinking_indicator.visible = true
+		return
 	var frame := int(thinking_elapsed * 4.0) % 6
 	if frame == thinking_frame:
 		return
@@ -5809,8 +5820,9 @@ func finish_generation() -> void:
 	var artifact_uses_wrong_image := active_image_edit_action and not attached_image_path.is_empty() and not cleaned.contains(attached_image_path.get_file())
 	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
-		if artifact_auto_retry_count < 4 and not active_artifact_request.is_empty():
+		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and not active_artifact_request.is_empty():
 			artifact_auto_retry_count += 1
+			artifact_total_retry_count += 1
 			artifact_partial_response = cleaned
 			active_artifact_builder_mode = false
 			active_artifact_language = ""
@@ -5821,12 +5833,13 @@ func finish_generation() -> void:
 				history.pop_back()
 			# Keep retry instructions in the system/artifact prompt. Only the user's
 			# original wording belongs in the visible conversation and session memory.
-			input_box.text = active_artifact_request
+			input_box.text = artifact_repair_prompt if not artifact_repair_target_path.is_empty() and not artifact_repair_prompt.is_empty() else active_artifact_request
 			send_button.disabled = false
 			stop_button.disabled = true
 			set_microphone_available(true)
-			set_status("REBUILDING INCOMPLETE FILE • ATTEMPT %d" % (artifact_auto_retry_count + 1), colors.amber)
-			show_toast("Incomplete draft discarded • rebuilding the full file")
+			set_status("REBUILDING INCOMPLETE FILE • FINAL RETRY", colors.amber)
+			set_artifact_monitor_phase("INCOMPLETE DRAFT • FINAL RETRY", "The first response was incomplete. SAM will try once more, then stop for manual review.", 0)
+			show_toast("Incomplete draft discarded • one final rebuild attempt")
 			call_deferred("send_message")
 			return
 		cleaned = "SAM rejected an incomplete or split artifact response from the local model because it was not one complete runnable code file. Nothing was saved or executed. Retry the request; Artifact Builder will require one complete implementation in one correctly labeled code block."
@@ -5840,7 +5853,9 @@ func finish_generation() -> void:
 		if not repaired_source.is_empty() and safely_replace_text_file(completed_repair_path, repaired_source, "artifact-auto-fix"):
 			artifact_repair_target_path = ""
 			artifact_repair_language = ""
+			artifact_repair_prompt = ""
 			artifact_validation_retry_count = 0
+			artifact_total_retry_count = 0
 			log_line("AUTO FIX", "Validated and saved repaired source: " + completed_repair_path)
 			show_toast("Auto-fix completed • repaired source validated and saved")
 		else:
@@ -5946,10 +5961,12 @@ func finish_generation() -> void:
 		elif completed_code_id < rendered_code_paths.size():
 			rendered_code_paths[completed_code_id] = completed_path
 		var completed_validation := validate_staged_text_file(completed_path, FileAccess.get_file_as_string(completed_path)) if not completed_path.is_empty() else {"ok": false, "detail": "Could not save the generated source."}
-		if not bool(completed_validation.get("ok", false)) and artifact_auto_fix_enabled and not completed_path.is_empty():
+		if not bool(completed_validation.get("ok", false)) and artifact_auto_fix_enabled and artifact_total_retry_count < 3 and not completed_path.is_empty():
 			queue_artifact_auto_fix.call_deferred(completed_path, rendered_code_languages[completed_code_id], str(completed_validation.get("detail", "Validation failed.")))
 		else:
 			show_artifact_result_dialog.call_deferred(completed_code_id, completed_path, completed_validation)
+	elif completed_artifact_turn:
+		close_artifact_build_monitor()
 	if should_offer_image_edit_run and not rendered_code_blocks.is_empty() and bool(settings.get("pc_commands_enabled", false)):
 		# The edit request itself authorizes preparing the job, but execution still
 		# receives the normal one-run confirmation with the exact script path.
@@ -7528,6 +7545,7 @@ func _on_voice_selected(index: int) -> void:
 
 func stop_generation() -> void:
 	var stopped_command_center := command_center_request_active
+	var stopped_artifact := active_artifact_builder_mode or is_instance_valid(artifact_monitor)
 	if command_center_request_active:
 		if command_center_watchdog_abort:
 			command_center_append("SAM planner timed out and was reset cleanly. Nothing executed.", "#ff8095")
@@ -7548,6 +7566,8 @@ func stop_generation() -> void:
 	context_request_serial += 1
 	context_resume_serial = -1
 	stream_retry_not_before_ms = 0
+	if stopped_artifact:
+		close_artifact_build_monitor()
 	if generating:
 		generating = false
 		request_preparing = false
@@ -7817,6 +7837,7 @@ func show_artifact_build_confirmation(request: String) -> void:
 	dialog.confirmed.connect(func():
 		artifact_auto_fix_enabled = autofix.button_pressed
 		artifact_validation_retry_count = 0
+		artifact_total_retry_count = 0
 		var final_request := request
 		if not influence.text.strip_edges().is_empty():
 			final_request += "\n\nADDITIONAL BUILD INFLUENCE:\n" + influence.text.strip_edges()
@@ -7832,6 +7853,91 @@ func show_artifact_build_confirmation(request: String) -> void:
 	apply_theme_recursive(dialog)
 	style_security_dialog(dialog, colors.cyan)
 	dialog.popup_centered_clamped(Vector2i(820, 600), 0.92)
+
+func show_artifact_build_monitor() -> void:
+	if is_instance_valid(artifact_monitor):
+		artifact_monitor.show()
+		return
+	var monitor := Window.new()
+	artifact_monitor = monitor
+	monitor.title = "SAM-AI BUILD MONITOR"
+	monitor.min_size = Vector2i(620, 260)
+	monitor.size = Vector2i(680, 300)
+	monitor.transient = true
+	monitor.exclusive = false
+	monitor.unresizable = false
+	var panel := PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	monitor.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	panel.add_child(box)
+	artifact_monitor_label = Label.new()
+	artifact_monitor_label.text = "BUILDING COMPLETE FILE"
+	artifact_monitor_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	artifact_monitor_label.add_theme_color_override("font_color", colors.cyan)
+	box.add_child(artifact_monitor_label)
+	artifact_monitor_progress = ProgressBar.new()
+	artifact_monitor_progress.min_value = 0
+	artifact_monitor_progress.max_value = 100
+	artifact_monitor_progress.value = 0
+	artifact_monitor_progress.show_percentage = true
+	artifact_monitor_progress.custom_minimum_size = Vector2(0, 34)
+	box.add_child(artifact_monitor_progress)
+	artifact_monitor_detail = Label.new()
+	artifact_monitor_detail.text = "Waiting for the first source tokens…"
+	artifact_monitor_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	artifact_monitor_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(artifact_monitor_detail)
+	var note := Label.new()
+	note.text = "Large source stays out of Chat while it is incomplete. Auto-fix attempts are capped and shown here."
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_color_override("font_color", colors.muted)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(note)
+	var stop := Button.new()
+	stop.text = "STOP BUILD"
+	stop.pressed.connect(func():
+		stop_generation()
+		close_artifact_build_monitor()
+		set_status("BUILD STOPPED BY USER", colors.amber))
+	box.add_child(stop)
+	add_child(monitor)
+	apply_theme_recursive(monitor)
+	monitor.popup_centered_clamped(Vector2i(680, 300), 0.88)
+
+func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: int, budget: int, percent: int) -> void:
+	if not is_instance_valid(artifact_monitor):
+		show_artifact_build_monitor()
+	if is_instance_valid(artifact_monitor_progress):
+		artifact_monitor_progress.value = percent
+	if is_instance_valid(artifact_monitor_label):
+		var attempt_text := ""
+		if artifact_validation_retry_count > 0:
+			attempt_text = " • AUTO-FIX %d/3" % artifact_validation_retry_count
+		elif artifact_auto_retry_count > 0:
+			attempt_text = " • REBUILD %d/1" % artifact_auto_retry_count
+		artifact_monitor_label.text = "BUILDING COMPLETE FILE%s" % attempt_text
+	if is_instance_valid(artifact_monitor_detail):
+		artifact_monitor_detail.text = "%d characters • %d lines • about %d of %d output tokens" % [chars, lines, approximate_tokens, budget]
+
+func set_artifact_monitor_phase(title: String, detail: String, percent := -1) -> void:
+	if not is_instance_valid(artifact_monitor):
+		show_artifact_build_monitor()
+	if is_instance_valid(artifact_monitor_label):
+		artifact_monitor_label.text = title
+	if is_instance_valid(artifact_monitor_detail):
+		artifact_monitor_detail.text = detail
+	if percent >= 0 and is_instance_valid(artifact_monitor_progress):
+		artifact_monitor_progress.value = percent
+
+func close_artifact_build_monitor() -> void:
+	if is_instance_valid(artifact_monitor):
+		artifact_monitor.queue_free()
+	artifact_monitor = null
+	artifact_monitor_label = null
+	artifact_monitor_progress = null
+	artifact_monitor_detail = null
 
 func is_visual_creation_request(value: String) -> bool:
 	var lower := value.to_lower()
@@ -8019,15 +8125,17 @@ func validate_staged_text_file(path: String, contents: String) -> Dictionary:
 		if not FileAccess.file_exists(python_path):
 			return {"ok": true, "detail": "Python runtime unavailable; structural validation only."}
 		var output: Array = []
-		var checker := ProjectSettings.globalize_path("res://tools/sam_python_check.py")
-		if not FileAccess.file_exists(checker):
-			# Exported builds keep helper sources inside the PCK. Materialize this
-			# read-only validator in user data so the private Python runtime can run it.
-			checker = ProjectSettings.globalize_path("user://sam_python_check.py")
-			var checker_file := FileAccess.open(checker, FileAccess.WRITE)
-			if checker_file:
-				checker_file.store_string(FileAccess.get_file_as_string("res://tools/sam_python_check.py"))
-				checker_file.close()
+		# `FileAccess.file_exists(res://...)` can see a virtual file inside the PCK,
+		# but an external Python process cannot. Always materialize the validator to
+		# a real user-data path before launching Python.
+		var checker := ProjectSettings.globalize_path("user://sam_python_check.py")
+		var checker_source := FileAccess.get_file_as_string("res://tools/sam_python_check.py")
+		var checker_file := FileAccess.open(checker, FileAccess.WRITE)
+		if checker_file:
+			checker_file.store_string(checker_source)
+			checker_file.close()
+		if not FileAccess.file_exists(checker) or checker_source.is_empty():
+			return {"ok": false, "detail": "SAM's Python validator could not be prepared on disk."}
 		var result := OS.execute(python_path, PackedStringArray([checker, path]), output, true, false)
 		var detail := "\n".join(output).strip_edges()
 		var parsed = JSON.parse_string(detail)
@@ -8140,6 +8248,7 @@ func extract_first_fenced_code(content: String) -> String:
 func show_artifact_result_dialog(code_id: int, path: String, validation: Dictionary) -> void:
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
 		return
+	close_artifact_build_monitor()
 	var dialog := ConfirmationDialog.new()
 	dialog.title = "SAM-AI BUILD READY"
 	dialog.ok_button_text = "RUN / TEST"
@@ -8979,18 +9088,22 @@ func show_missing_dependency_dialog(module: String, path: String, language: Stri
 func queue_artifact_auto_fix(path: String, language: String, detail: String) -> void:
 	if not FileAccess.file_exists(path):
 		return
-	if artifact_validation_retry_count >= 3:
+	if artifact_total_retry_count >= 3:
 		set_status("AUTO-FIX PAUSED • MANUAL REVIEW NEEDED", colors.amber)
-		show_toast("Auto-fix stopped after 3 attempts • open Live Preview to edit or influence the build")
+		set_artifact_monitor_phase("BUILD PAUSED • MANUAL REVIEW NEEDED", "SAM stopped after 3 total rebuild/repair attempts so it cannot loop forever. Open Live Preview or add a new influence before trying again.", 100)
+		show_toast("Build stopped after 3 total attempts • open Live Preview to review it")
 		return
 	artifact_validation_retry_count += 1
+	artifact_total_retry_count += 1
 	artifact_repair_target_path = path
 	artifact_repair_language = language
 	attach_file(path)
-	input_box.text = "Repair the attached generated source. Return exactly one complete corrected file, preserve every requested feature, and do not use placeholders. Validation/runtime failure:\n\n%s" % detail.left(1800)
+	artifact_repair_prompt = "Repair the attached generated source. Return exactly one complete corrected file, preserve every requested feature, and do not use placeholders. Validation/runtime failure:\n\n%s" % detail.left(1800)
+	input_box.text = artifact_repair_prompt
 	artifact_build_confirmed_once = true
 	set_status("AUTO-FIX • ASKING SAM TO REPAIR THE BUILD", colors.amber)
-	show_toast("Auto-fix caught an error • repair attempt %d of 3" % artifact_validation_retry_count)
+	set_artifact_monitor_phase("AUTO-FIX • TOTAL ATTEMPT %d OF 3" % artifact_total_retry_count, detail.left(500), 0)
+	show_toast("Auto-fix caught an error • total attempt %d of 3" % artifact_total_retry_count)
 	call_deferred("send_message")
 
 func install_python_dependency(package: String, path: String, language: String) -> void:
@@ -12815,7 +12928,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.4.0 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.4.1 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):

@@ -1,4 +1,12 @@
-# SAM-AI v1.4.0
+# SAM-AI v1.4.1
+
+## Fixed in v1.4.1
+
+- Code generation progress now stays in a dedicated, resizable Build Monitor instead of flashing inside the Chat reply indicator.
+- Packaged builds materialize SAM's Python validator to a real file before launching it, so validation no longer fails by pointing Python at a helper trapped inside the Godot PCK.
+- Rebuilds and validation repairs now share one strict three-attempt ceiling. SAM stops for manual review instead of repeatedly regenerating the same project.
+- An incomplete repair retries the repair instructions and attached source, never the original build prompt.
+- Stopping a build closes its monitor cleanly, while completed builds continue to the Build Ready review and Live Preview workflow.
 
 ## New in v1.4.0
 
