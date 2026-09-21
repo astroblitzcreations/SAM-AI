@@ -192,6 +192,7 @@ var attached_file_kind := ""
 var skip_attachment_learning_confirm := false
 var engine_mode := "primary"
 var pending_vision_send := false
+var pending_primary_text_send := false
 var restore_primary_when_done := false
 var thinking_elapsed := 0.0
 var thinking_frame := -1
@@ -3179,6 +3180,11 @@ func poll_health() -> void:
 			health_retry_at_ms = now + 500
 
 func resume_pending_vision_send() -> void:
+	if pending_primary_text_send and engine_mode == "primary":
+		pending_primary_text_send = false
+		log_line("ROUTER", "Primary model ready • resuming the pending text or code request")
+		call_deferred("send_message")
+		return
 	if pending_vision_send and engine_mode == "vision":
 		pending_vision_send = false
 		log_line("VISION", "Vision model ready • resuming the pending image request")
@@ -3222,8 +3228,17 @@ func send_message() -> void:
 	else:
 		# Old session images are opt-in context. Ordinary conversation/corrections
 		# must stay text-only even if an image exists earlier in this session.
-		if _has_explicit_image_context_request(user_text):
+		var wants_image_context := _has_explicit_image_context_request(user_text)
+		if wants_image_context:
 			restore_recent_image_context(user_text)
+		elif not attached_image_path.is_empty():
+			# An image can remain visible after a completed Studio job, a restored
+			# session, or an abandoned attachment. Never let it silently change the
+			# model used by a later text/code turn. Image context is deliberately
+			# opt-in: the message must mention the image, picture, photo, or edit.
+			var detached_name := attached_image_path.get_file()
+			clear_attachment()
+			log_line("ROUTER", "Detached stale image before text request: %s" % detached_name)
 	if handle_primary_model_command(user_text):
 		return
 	if studio_turn:
@@ -3251,6 +3266,20 @@ func send_message() -> void:
 		input_box.clear()
 		open_visual_studio(user_text, "video" if visual_request_is_video(user_text) else "image")
 		show_toast("Visual request moved to Image + Video Studio • review settings and Generate")
+		return
+	# A previous visual turn may have left the vision engine running. Normal
+	# Chat requests always return to the primary language model before they are
+	# sent, including coding prompts that happen to contain visual/UI words.
+	if not studio_turn and not _has_explicit_image_context_request(user_text) and engine_mode == "vision":
+		pending_vision_send = false
+		pending_primary_text_send = true
+		restore_primary_when_done = false
+		engine_mode = "primary"
+		set_status("SWITCHING TO PRIMARY ENGINE", colors.amber)
+		show_toast("Text/code request • returning to the primary model…")
+		log_line("ROUTER", "Returning from vision to primary for a normal Chat request")
+		show_model_switch_overlay()
+		start_engine()
 		return
 	if handle_recent_learning_question(user_text):
 		return
@@ -4264,6 +4293,13 @@ func is_code_request(text: String) -> bool:
 	for marker in code_markers:
 		if lower.contains(marker):
 			return true
+	# Natural project briefs often ask for executable Python without using the
+	# exact phrase "write code". Treat those as code before any visual routing;
+	# words such as screen, rendering, preview, or visuals describe the program.
+	var names_code_platform := lower.contains("python") or lower.contains("pygame") or lower.contains("javascript") or lower.contains("typescript") or lower.contains("c#") or lower.contains("c++")
+	var requests_software := lower.contains("game") or lower.contains("program") or lower.contains("script") or lower.contains("app") or lower.contains("executable")
+	if names_code_platform and requests_software:
+		return true
 	return text.contains("```")
 
 func is_godot_request(text: String) -> bool:
@@ -12525,7 +12561,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.3.0 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.3.1 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):

@@ -1,4 +1,11 @@
-# SAM-AI v1.3.0
+# SAM-AI v1.3.1
+
+## Fixed in v1.3.1
+
+- Normal Chat now treats image context as opt-in. A generated, restored, or abandoned image can no longer silently carry into a later text or coding request.
+- Text and code messages automatically return from the vision engine to the primary language model before sending.
+- Python/Pygame software briefs are classified as coding requests even when they contain UI terms such as screen, rendering, preview, or visuals.
+- The Image + Video Studio remains the only place that can directly start local visual generation.
 
 ## New in v1.3.0
 
