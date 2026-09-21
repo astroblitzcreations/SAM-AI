@@ -186,6 +186,11 @@ var artifact_monitor: Window
 var artifact_monitor_label: Label
 var artifact_monitor_progress: ProgressBar
 var artifact_monitor_detail: Label
+var artifact_monitor_compact: PanelContainer
+var artifact_monitor_compact_progress: ProgressBar
+var artifact_monitor_compact_label: Label
+var artifact_monitor_cat: Label
+var artifact_monitor_cat_elapsed := 0.0
 var active_image_edit_action := false
 var stream_retry_count := 0
 var stream_retry_not_before_ms := 0
@@ -2922,6 +2927,7 @@ func setting_text(key: String) -> String:
 	return str(settings[key])
 
 func _process(delta: float) -> void:
+	update_artifact_builder_cat(delta)
 	if is_instance_valid(cuda_runtime_request) and is_instance_valid(cuda_install_progress):
 		var total_bytes := cuda_runtime_request.get_body_size()
 		var downloaded_bytes := cuda_runtime_request.get_downloaded_bytes()
@@ -7865,32 +7871,56 @@ func show_artifact_build_confirmation(request: String) -> void:
 func show_artifact_build_monitor() -> void:
 	if is_instance_valid(artifact_monitor):
 		artifact_monitor.show()
+		hide_artifact_compact_monitor()
 		return
 	var monitor := Window.new()
 	artifact_monitor = monitor
 	monitor.title = "SAM-AI BUILD MONITOR"
-	monitor.min_size = Vector2i(620, 260)
-	monitor.size = Vector2i(680, 300)
+	monitor.min_size = Vector2i(620, 290)
+	monitor.size = Vector2i(720, 330)
 	monitor.transient = true
 	monitor.exclusive = false
 	monitor.unresizable = false
+	monitor.close_requested.connect(minimize_artifact_build_monitor)
 	var panel := PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.025, 0.06, 0.105, 0.99)
+	panel_style.border_color = colors.cyan
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(14)
+	panel_style.shadow_color = Color(0, 0.8, 1, 0.30)
+	panel_style.shadow_size = 18
+	panel.add_theme_stylebox_override("panel", panel_style)
 	monitor.add_child(panel)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 26)
+	margin.add_theme_constant_override("margin_right", 26)
+	margin.add_theme_constant_override("margin_top", 18)
+	margin.add_theme_constant_override("margin_bottom", 18)
+	panel.add_child(margin)
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 14)
-	panel.add_child(box)
+	box.add_theme_constant_override("separation", 12)
+	margin.add_child(box)
+	var logo := Label.new()
+	logo.text = "SAM-AI CODE BUILDER"
+	logo.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	logo.add_theme_color_override("font_color", colors.cyan)
+	logo.add_theme_font_size_override("font_size", 20)
+	box.add_child(logo)
 	artifact_monitor_label = Label.new()
 	artifact_monitor_label.text = "BUILDING COMPLETE FILE"
 	artifact_monitor_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	artifact_monitor_label.add_theme_color_override("font_color", colors.cyan)
+	artifact_monitor_label.add_theme_color_override("font_color", colors.text)
+	artifact_monitor_label.add_theme_font_size_override("font_size", 22)
 	box.add_child(artifact_monitor_label)
 	artifact_monitor_progress = ProgressBar.new()
 	artifact_monitor_progress.min_value = 0
 	artifact_monitor_progress.max_value = 100
 	artifact_monitor_progress.value = 0
-	artifact_monitor_progress.show_percentage = true
-	artifact_monitor_progress.custom_minimum_size = Vector2(0, 34)
+	artifact_monitor_progress.show_percentage = false
+	artifact_monitor_progress.custom_minimum_size = Vector2(0, 24)
+	style_visual_progress_bar(artifact_monitor_progress)
 	box.add_child(artifact_monitor_progress)
 	artifact_monitor_detail = Label.new()
 	artifact_monitor_detail.text = "Waiting for the first source tokens…"
@@ -7903,22 +7933,112 @@ func show_artifact_build_monitor() -> void:
 	note.add_theme_color_override("font_color", colors.muted)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(note)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 10)
+	box.add_child(actions)
+	var minimize := Button.new()
+	minimize.text = "— MINIMIZE"
+	minimize.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	minimize.pressed.connect(minimize_artifact_build_monitor)
+	actions.add_child(minimize)
 	var stop := Button.new()
 	stop.text = "STOP BUILD"
+	stop.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	stop.pressed.connect(func():
 		stop_generation()
 		close_artifact_build_monitor()
 		set_status("BUILD STOPPED BY USER", colors.amber))
-	box.add_child(stop)
+	actions.add_child(stop)
 	add_child(monitor)
 	apply_theme_recursive(monitor)
-	monitor.popup_centered_clamped(Vector2i(680, 300), 0.88)
+	monitor.popup_centered_clamped(Vector2i(720, 330), 0.88)
+
+func minimize_artifact_build_monitor() -> void:
+	if is_instance_valid(artifact_monitor):
+		artifact_monitor.hide()
+	show_artifact_compact_monitor()
+
+func show_artifact_compact_monitor() -> void:
+	if is_instance_valid(artifact_monitor_compact):
+		artifact_monitor_compact.show()
+		return
+	var card := PanelContainer.new()
+	artifact_monitor_compact = card
+	card.z_index = 45
+	card.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	card.position = Vector2(-410, 72)
+	card.size = Vector2(390, 82)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.025, 0.06, 0.105, 0.98)
+	style.border_color = colors.cyan
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(10)
+	style.shadow_color = Color(0, 0.8, 1, 0.25)
+	style.shadow_size = 10
+	card.add_theme_stylebox_override("panel", style)
+	var compact_stack := VBoxContainer.new()
+	compact_stack.add_theme_constant_override("separation", 2)
+	card.add_child(compact_stack)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	compact_stack.add_child(row)
+	artifact_monitor_compact_label = Label.new()
+	artifact_monitor_compact_label.text = "BUILD 0%"
+	artifact_monitor_compact_label.custom_minimum_size.x = 82
+	artifact_monitor_compact_label.add_theme_color_override("font_color", colors.cyan)
+	row.add_child(artifact_monitor_compact_label)
+	artifact_monitor_compact_progress = ProgressBar.new()
+	artifact_monitor_compact_progress.show_percentage = false
+	artifact_monitor_compact_progress.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	artifact_monitor_compact_progress.custom_minimum_size = Vector2(150, 14)
+	style_visual_progress_bar(artifact_monitor_compact_progress)
+	row.add_child(artifact_monitor_compact_progress)
+	var restore := Button.new()
+	restore.text = "RESTORE"
+	restore.pressed.connect(show_artifact_build_monitor)
+	row.add_child(restore)
+	artifact_monitor_cat = Label.new()
+	artifact_monitor_cat.text = "🐈  🔨  building…"
+	artifact_monitor_cat.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	artifact_monitor_cat.clip_text = true
+	artifact_monitor_cat.add_theme_color_override("font_color", Color("#a9bad3"))
+	artifact_monitor_cat.add_theme_font_size_override("font_size", 13)
+	compact_stack.add_child(artifact_monitor_cat)
+	add_child(card)
+	apply_theme_recursive(card)
+
+func hide_artifact_compact_monitor() -> void:
+	if is_instance_valid(artifact_monitor_compact):
+		artifact_monitor_compact.hide()
+
+func update_artifact_builder_cat(delta: float) -> void:
+	if not is_instance_valid(artifact_monitor_compact) or not artifact_monitor_compact.visible or not is_instance_valid(artifact_monitor_cat):
+		return
+	artifact_monitor_cat_elapsed += delta
+	var frame := int(artifact_monitor_cat_elapsed * 3.0)
+	var cat_frames := ["🐈", "🐈‍⬛", "🐈", "🐾"]
+	var tool_frames := ["🔨", "🪚", "🧰", "🧱"]
+	var position := frame % 22
+	if (frame / 22) % 2 == 1:
+		position = 21 - position
+	var percent := int(artifact_monitor_compact_progress.value) if is_instance_valid(artifact_monitor_compact_progress) else 0
+	var house := "·" if percent < 20 else ("▱" if percent < 45 else ("⌂" if percent < 75 else "🏠"))
+	var scene := " ".repeat(position) + str(cat_frames[frame % cat_frames.size()]) + " " + str(tool_frames[frame % tool_frames.size()]) + "  " + house
+	if frame % 29 == 0:
+		scene = "🐈 …coffee break… ☕  " + house
+	elif frame % 37 == 0:
+		scene = "                    🐈💨  (back soon)"
+	artifact_monitor_cat.text = scene
 
 func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: int, budget: int, percent: int) -> void:
 	if not is_instance_valid(artifact_monitor):
 		show_artifact_build_monitor()
 	if is_instance_valid(artifact_monitor_progress):
 		artifact_monitor_progress.value = percent
+	if is_instance_valid(artifact_monitor_compact_progress):
+		artifact_monitor_compact_progress.value = percent
+	if is_instance_valid(artifact_monitor_compact_label):
+		artifact_monitor_compact_label.text = "BUILD %d%%" % percent
 	if is_instance_valid(artifact_monitor_label):
 		var attempt_text := ""
 		if artifact_validation_retry_count > 0:
@@ -7938,14 +8058,24 @@ func set_artifact_monitor_phase(title: String, detail: String, percent := -1) ->
 		artifact_monitor_detail.text = detail
 	if percent >= 0 and is_instance_valid(artifact_monitor_progress):
 		artifact_monitor_progress.value = percent
+	if percent >= 0 and is_instance_valid(artifact_monitor_compact_progress):
+		artifact_monitor_compact_progress.value = percent
+		artifact_monitor_compact_label.text = "BUILD %d%%" % percent
 
 func close_artifact_build_monitor() -> void:
 	if is_instance_valid(artifact_monitor):
 		artifact_monitor.queue_free()
+	if is_instance_valid(artifact_monitor_compact):
+		artifact_monitor_compact.queue_free()
 	artifact_monitor = null
 	artifact_monitor_label = null
 	artifact_monitor_progress = null
 	artifact_monitor_detail = null
+	artifact_monitor_compact = null
+	artifact_monitor_compact_progress = null
+	artifact_monitor_compact_label = null
+	artifact_monitor_cat = null
+	artifact_monitor_cat_elapsed = 0.0
 
 func is_visual_creation_request(value: String) -> bool:
 	var lower := value.to_lower()
@@ -8261,13 +8391,14 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	dialog.title = "SAM-AI BUILD READY"
 	dialog.ok_button_text = "RUN / TEST"
 	dialog.cancel_button_text = "STOP / CLOSE"
-	dialog.min_size = Vector2i(760, 500)
+	dialog.min_size = Vector2i(700, 440)
+	dialog.max_size = Vector2i(900, 680)
 	dialog.dialog_text = ""
 	var label := dialog.get_label()
 	label.hide()
 	var content := label.get_parent()
 	var box := VBoxContainer.new()
-	box.custom_minimum_size = Vector2(720, 360)
+	box.custom_minimum_size = Vector2(660, 300)
 	box.add_theme_constant_override("separation", 10)
 	content.add_child(box)
 	var heading := Label.new()
@@ -8281,7 +8412,8 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	var preview := TextEdit.new()
 	preview.text = rendered_code_blocks[code_id]
 	preview.editable = false
-	preview.custom_minimum_size = Vector2(0, 190)
+	preview.custom_minimum_size = Vector2(0, 140)
+	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	preview.wrap_mode = TextEdit.LINE_WRAPPING_NONE
 	box.add_child(preview)
 	var autofix := CheckBox.new()
@@ -8318,7 +8450,7 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	add_child(dialog)
 	apply_theme_recursive(dialog)
 	style_security_dialog(dialog, colors.green if bool(validation.get("ok", false)) else colors.amber)
-	dialog.popup_centered_clamped(Vector2i(840, 620), 0.92)
+	dialog.popup_centered_clamped(Vector2i(800, 560), 0.88)
 
 func prepare_rendered_code_in_workspace(code_id: int) -> String:
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
@@ -9099,6 +9231,8 @@ func show_missing_dependency_dialog(module: String, path: String, language: Stri
 func queue_artifact_auto_fix(path: String, language: String, detail: String) -> void:
 	if not FileAccess.file_exists(path):
 		return
+	if language.to_lower() in ["python", "py"] and try_deterministic_python_repair(path, detail):
+		return
 	if artifact_total_retry_count >= 3:
 		set_actionable_status("AUTO-FIX PAUSED • CLICK FOR MANUAL REVIEW", colors.amber, open_artifact_manual_review, "Open the failed build in Live Preview")
 		set_artifact_monitor_phase("BUILD PAUSED • MANUAL REVIEW NEEDED", "SAM stopped after 3 total rebuild/repair attempts so it cannot loop forever. Open Live Preview or add a new influence before trying again.", 100)
@@ -9116,6 +9250,66 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	set_artifact_monitor_phase("AUTO-FIX • TOTAL ATTEMPT %d OF 3" % artifact_total_retry_count, detail.left(500), 0)
 	show_toast("Auto-fix caught an error • total attempt %d of 3" % artifact_total_retry_count)
 	call_deferred("send_message")
+
+func try_deterministic_python_repair(path: String, detail: String) -> bool:
+	if not detail.begins_with("Possibly undefined names:"):
+		return false
+	var known_constants := {
+		"BLACK": "(0, 0, 0)", "WHITE": "(255, 255, 255)", "GRAY": "(128, 128, 128)",
+		"GREY": "(128, 128, 128)", "RED": "(235, 64, 88)", "GREEN": "(80, 220, 120)",
+		"BLUE": "(65, 135, 255)", "CYAN": "(50, 225, 240)", "YELLOW": "(250, 220, 70)",
+		"ORANGE": "(255, 150, 55)", "PURPLE": "(165, 90, 235)", "MAGENTA": "(235, 70, 210)",
+		"PINK": "(255, 120, 180)", "NAVY": "(20, 35, 75)", "TEAL": "(35, 175, 175)"
+	}
+	var additions: Array[String] = []
+	for constant_name in known_constants:
+		if detail.contains(str(constant_name) + " (line"):
+			additions.append("%s = %s" % [constant_name, known_constants[constant_name]])
+	if additions.is_empty():
+		return false
+	var source := FileAccess.get_file_as_string(path)
+	if source.is_empty():
+		return false
+	var lines := source.split("\n")
+	var insertion := 0
+	for index in range(lines.size()):
+		var trimmed := str(lines[index]).strip_edges()
+		if trimmed.begins_with("import ") or trimmed.begins_with("from ") or trimmed.is_empty() or trimmed.begins_with("#"):
+			insertion = index + 1
+			continue
+		break
+	var repaired_lines := PackedStringArray()
+	for index in range(lines.size()):
+		if index == insertion:
+			repaired_lines.append("# SAM deterministic repair: missing color constants")
+			for definition in additions:
+				repaired_lines.append(definition)
+			repaired_lines.append("")
+		repaired_lines.append(str(lines[index]))
+	if insertion >= lines.size():
+		for definition in additions:
+			repaired_lines.append(definition)
+	var repaired := "\n".join(repaired_lines)
+	if not safely_replace_text_file(path, repaired, "deterministic-missing-constants"):
+		return false
+	var validation := validate_staged_text_file(path, repaired)
+	if not bool(validation.get("ok", false)):
+		return false
+	var repaired_code_id := -1
+	for code_id in range(rendered_code_paths.size()):
+		if rendered_code_paths[code_id] == path:
+			repaired_code_id = code_id
+			break
+	if repaired_code_id < 0 and not rendered_code_blocks.is_empty():
+		repaired_code_id = rendered_code_blocks.size() - 1
+	if repaired_code_id >= 0:
+		rendered_code_blocks[repaired_code_id] = repaired
+		reset_artifact_repair_state()
+		set_status("SOURCE AUTO-REPAIRED • READY TO TEST", colors.green)
+		show_toast("SAM repaired missing constants locally • no model retry was needed")
+		show_artifact_result_dialog.call_deferred(repaired_code_id, path, validation)
+		return true
+	return false
 
 func reset_artifact_repair_state() -> void:
 	artifact_repair_target_path = ""
