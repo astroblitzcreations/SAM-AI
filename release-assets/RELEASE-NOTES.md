@@ -1,4 +1,14 @@
-# SAM-AI v1.2.4
+# SAM-AI v1.2.5
+
+## New in v1.2.5
+
+- First-run setup now places a one-click NVIDIA CUDA installer directly beside the CUDA status warning.
+- Modules includes an Install / Repair NVIDIA CUDA action instead of requiring users to find, download, and merge two archives manually.
+- SAM downloads both matching official llama.cpp CUDA 12.4 packages with live byte and percentage progress.
+- Both archives are safely extracted into SAM's private app-data runtime folder; nested runtime DLLs are placed beside `llama-server.exe` automatically.
+- The new GPU engine is selected automatically, GPU layers are enabled, and the component check reruns immediately after installation.
+- The bundled CPU engine is left untouched as a fallback, and failed or canceled CUDA installation never prevents CPU mode.
+- Windows Sandbox receives a clear warning that it may expose the host GPU name without supporting CUDA passthrough.
 
 ## Fixed in v1.2.4
 

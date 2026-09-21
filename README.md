@@ -15,6 +15,13 @@ SAM-AI intentionally does not bundle multi-gigabyte AI models. On first launch, 
 the Modules tab and its setup checker to download or select a compatible GGUF model,
 Windows llama.cpp runtime, and any optional vision or voice modules.
 
+On NVIDIA systems, first-run setup and Modules provide an **Install / Repair
+NVIDIA CUDA** action. SAM downloads the two matching official llama.cpp CUDA
+packages, installs them into its private app-data folder, selects the GPU engine,
+and keeps the bundled CPU runtime available as a fallback. Windows Sandbox may
+display the host GPU name even when CUDA passthrough is unavailable; verify GPU
+acceleration on a normal Windows installation.
+
 ## Development
 
 Open `project.godot` in Godot 4.6. Model, engine, memory, appearance, and voice paths

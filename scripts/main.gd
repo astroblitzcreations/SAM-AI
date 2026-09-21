@@ -387,6 +387,15 @@ var setup_check_poll_elapsed := 0.0
 var setup_last_required_state := ""
 var windows_runtime_request: HTTPRequest
 var windows_runtime_download_path := ""
+var cuda_runtime_request: HTTPRequest
+var cuda_install_button: Button
+var cuda_setup_button: Button
+var cuda_install_dialog: AcceptDialog
+var cuda_install_status: Label
+var cuda_install_progress: ProgressBar
+var cuda_install_stage := 0
+var cuda_install_root := ""
+var cuda_download_path := ""
 var startup_screen: Control
 var startup_message: Label
 var startup_detail: Label
@@ -677,6 +686,11 @@ func bind_editor_ui() -> void:
 	$FirstRunSetup/Center/Panel/Margin/Content/ServerRow/BrowseServer.pressed.connect(func(): browse_setup_path(false))
 	$FirstRunSetup/Center/Panel/Margin/Content/Actions/CheckAgain.pressed.connect(func(): refresh_setup_checks(true))
 	$FirstRunSetup/Center/Panel/Margin/Content/Actions/WindowsRuntime.pressed.connect(open_windows_runtime_download)
+	cuda_setup_button = make_button("INSTALL NVIDIA CUDA", request_cuda_runtime_install, colors.cyan)
+	cuda_setup_button.tooltip_text = "Automatically download and install the official matching llama.cpp CUDA engine and runtime DLLs"
+	var setup_content: VBoxContainer = $FirstRunSetup/Center/Panel/Margin/Content
+	setup_content.add_child(cuda_setup_button)
+	setup_content.move_child(cuda_setup_button, $FirstRunSetup/Center/Panel/Margin/Content/Actions.get_index())
 	$FirstRunSetup/Center/Panel/Margin/Content/Actions/Complete.pressed.connect(complete_first_run)
 	$FirstRunSetup/Center/Panel/Margin/Content/TitleRow/SetupLater.pressed.connect(close_first_run_to_modules)
 	$Page/Tabs/Chat/Composer/Actions/NewSession.pressed.connect(clear_session)
@@ -831,13 +845,16 @@ func setup_modules_tab() -> void:
 	runtime_heading.add_theme_color_override("font_color", colors.cyan)
 	content.add_child(runtime_heading)
 	var runtime_note := Label.new()
-	runtime_note.text = "SAM-AI needs llama-server.exe. CPU works without a supported GPU but is slower. NVIDIA users should choose Windows x64 CUDA 12 and also download the matching CUDA runtime DLL archive shown on the same official release. Extract both archives into the same folder."
+	runtime_note.text = "SAM-AI needs llama-server.exe. CPU works everywhere but is slower. On an NVIDIA PC, the guided installer below downloads both matching official llama.cpp CUDA packages, installs them together, and selects the GPU engine automatically."
 	runtime_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	runtime_note.add_theme_color_override("font_color", colors.muted)
 	content.add_child(runtime_note)
 	add_runtime_download_row(content, "CPU-ONLY • UNIVERSAL FALLBACK", "module_url_llama_cpu", LLAMA_CPU_WINDOWS_URL, "Direct Windows x64 CPU package • no supported GPU required", "DOWNLOAD WINDOWS CPU")
 	add_runtime_download_row(content, "NVIDIA CUDA • FAST GPU (1 OF 2)", "module_url_llama_cuda", LLAMA_CUDA_WINDOWS_URL, "Direct Windows x64 CUDA 12.4 engine package", "DOWNLOAD CUDA ENGINE")
 	add_runtime_download_row(content, "NVIDIA CUDA DLLS (2 OF 2)", "module_url_llama_cudart", LLAMA_CUDART_WINDOWS_URL, "Required companion CUDA 12.4 DLL package • extract into the same folder", "DOWNLOAD CUDA DLLS")
+	cuda_install_button = make_button("⚡ INSTALL / REPAIR NVIDIA CUDA AUTOMATICALLY", request_cuda_runtime_install, colors.green)
+	cuda_install_button.tooltip_text = "Downloads both official packages, safely extracts them into SAM's managed runtime folder, selects llama-server.exe, and rechecks setup"
+	content.add_child(cuda_install_button)
 	var runtime_actions := HBoxContainer.new()
 	runtime_actions.add_theme_constant_override("separation", 7)
 	content.add_child(runtime_actions)
@@ -1165,6 +1182,220 @@ func open_module_download(url: String) -> void:
 		show_toast("Enter and save a valid module download link first")
 		return
 	open_web_url(clean_url, "Download a user-selected local AI module")
+
+func request_cuda_runtime_install() -> void:
+	if OS.get_name() != "Windows":
+		show_toast("The guided CUDA installer is available on Windows")
+		return
+	if is_instance_valid(cuda_runtime_request):
+		show_toast("CUDA installation is already running")
+		return
+	var gpu_name := detected_gpu_name()
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "INSTALL NVIDIA CUDA ACCELERATION"
+	dialog.dialog_text = "Detected graphics: %s\n\nSAM will download the matching official llama.cpp CUDA 12.4 engine and NVIDIA runtime DLL archives, safely extract them into SAM's private app-data folder, select the new llama-server.exe, and keep the bundled CPU engine as a fallback.\n\nApproximate download size can exceed 500 MB. No chat, memory, model, or personal data is uploaded.\n\n%s" % [gpu_name, "Windows Sandbox may report the host GPU while blocking CUDA passthrough. Installation is still safe, but GPU acceleration must be tested on normal Windows." if running_in_windows_sandbox() else "Administrator access is not required because the runtime is installed only for SAM-AI."]
+	dialog.ok_button_text = "DOWNLOAD + INSTALL"
+	dialog.cancel_button_text = "KEEP CPU MODE"
+	dialog.confirmed.connect(func(): dialog.queue_free(); begin_cuda_runtime_install())
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	style_security_dialog(dialog, colors.cyan)
+	dialog.popup_centered(Vector2i(760, 470))
+
+func begin_cuda_runtime_install() -> void:
+	# A repair may overwrite DLLs used by the currently selected CUDA engine.
+	# Stop it first so Windows does not leave a partially updated runtime behind.
+	stop_engine()
+	cuda_install_root = ProjectSettings.globalize_path("user://runtimes/llama-cuda-b11064")
+	var download_root := ProjectSettings.globalize_path("user://downloads")
+	DirAccess.make_dir_recursive_absolute(cuda_install_root)
+	DirAccess.make_dir_recursive_absolute(download_root)
+	cuda_install_stage = 1
+	show_cuda_install_progress()
+	start_cuda_package_download(str(settings.get("module_url_llama_cuda", LLAMA_CUDA_WINDOWS_URL)), download_root.path_join("llama-cuda-engine.zip"), "Downloading CUDA engine package (1 of 2)…")
+
+func show_cuda_install_progress() -> void:
+	cuda_install_dialog = AcceptDialog.new()
+	cuda_install_dialog.title = "SAM-AI CUDA INSTALLER"
+	cuda_install_dialog.exclusive = false
+	cuda_install_dialog.get_ok_button().visible = false
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(620, 150)
+	box.add_theme_constant_override("separation", 14)
+	cuda_install_status = Label.new()
+	cuda_install_status.text = "Preparing official CUDA packages…"
+	cuda_install_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(cuda_install_status)
+	cuda_install_progress = ProgressBar.new()
+	cuda_install_progress.min_value = 0
+	cuda_install_progress.max_value = 100
+	cuda_install_progress.value = 0
+	cuda_install_progress.show_percentage = true
+	box.add_child(cuda_install_progress)
+	var note := Label.new()
+	note.text = "Keep SAM-AI open. The existing CPU runtime remains available if this install cannot complete."
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_color_override("font_color", colors.muted)
+	box.add_child(note)
+	cuda_install_dialog.add_child(box)
+	add_child(cuda_install_dialog)
+	apply_theme_recursive(cuda_install_dialog)
+	style_security_dialog(cuda_install_dialog, colors.cyan)
+	cuda_install_dialog.popup_centered(Vector2i(700, 270))
+
+func start_cuda_package_download(url: String, destination: String, status: String) -> void:
+	if not url.begins_with("https://"):
+		fail_cuda_runtime_install("CUDA package URL must use HTTPS")
+		return
+	cuda_download_path = destination
+	cuda_install_status.text = status
+	cuda_runtime_request = HTTPRequest.new()
+	cuda_runtime_request.name = "CudaRuntimeDownload"
+	cuda_runtime_request.download_file = destination
+	cuda_runtime_request.max_redirects = 8
+	cuda_runtime_request.timeout = 1800.0
+	cuda_runtime_request.request_completed.connect(finish_cuda_package_download)
+	add_child(cuda_runtime_request)
+	set_cuda_install_controls_enabled(false)
+	set_privacy_activity(true, "Downloading official CUDA runtime", url_host(url), "Install optional NVIDIA acceleration for the local llama.cpp engine.", 9, "SAM downloads executable runtime files only. Chats, memories, models, and device data remain local.")
+	var request_error := cuda_runtime_request.request(url)
+	if request_error != OK:
+		fail_cuda_runtime_install("CUDA download could not start (error %d)" % request_error)
+
+func finish_cuda_package_download(result: int, response_code: int, _headers: PackedStringArray, _body: PackedByteArray) -> void:
+	var succeeded := result == HTTPRequest.RESULT_SUCCESS and response_code >= 200 and response_code < 300 and FileAccess.file_exists(cuda_download_path)
+	if is_instance_valid(cuda_runtime_request):
+		cuda_runtime_request.queue_free()
+	cuda_runtime_request = null
+	if not succeeded:
+		fail_cuda_runtime_install("CUDA package download failed (HTTP %d, result %d)" % [response_code, result])
+		return
+	cuda_install_status.text = "Installing package %d of 2…" % cuda_install_stage
+	if not extract_cuda_package_safely(cuda_download_path, cuda_install_root):
+		fail_cuda_runtime_install("The downloaded CUDA archive could not be safely extracted")
+		return
+	if cuda_install_stage == 1:
+		cuda_install_stage = 2
+		start_cuda_package_download(str(settings.get("module_url_llama_cudart", LLAMA_CUDART_WINDOWS_URL)), ProjectSettings.globalize_path("user://downloads/llama-cuda-dlls.zip"), "Downloading NVIDIA runtime DLLs (2 of 2)…")
+		return
+	complete_cuda_runtime_install()
+
+func extract_cuda_package_safely(zip_path: String, destination_root: String) -> bool:
+	var reader := ZIPReader.new()
+	if reader.open(zip_path) != OK:
+		return false
+	for raw_entry in reader.get_files():
+		var entry := str(raw_entry).replace("\\", "/")
+		if entry.begins_with("/") or entry.contains("../") or entry == ".." or entry.contains(":"):
+			reader.close()
+			return false
+		var destination := destination_root.path_join(entry).simplify_path()
+		if not destination.replace("\\", "/").begins_with(destination_root.replace("\\", "/") + "/"):
+			reader.close()
+			return false
+		if entry.ends_with("/"):
+			DirAccess.make_dir_recursive_absolute(destination)
+			continue
+		DirAccess.make_dir_recursive_absolute(destination.get_base_dir())
+		var output := FileAccess.open(destination, FileAccess.WRITE)
+		if output == null:
+			reader.close()
+			return false
+		output.store_buffer(reader.read_file(str(raw_entry)))
+		output.close()
+	reader.close()
+	return true
+
+func find_file_recursive(root: String, filename: String) -> String:
+	var directory := DirAccess.open(root)
+	if directory == null:
+		return ""
+	for file in directory.get_files():
+		if file.to_lower() == filename.to_lower():
+			return root.path_join(file)
+	for child in directory.get_directories():
+		var found := find_file_recursive(root.path_join(child), filename)
+		if not found.is_empty():
+			return found
+	return ""
+
+func copy_runtime_dlls_beside_server(root: String, server_path: String) -> bool:
+	var directory := DirAccess.open(root)
+	if directory == null:
+		return false
+	var copied_any := false
+	for file in directory.get_files():
+		if not file.to_lower().ends_with(".dll"):
+			continue
+		var source := root.path_join(file)
+		var destination := server_path.get_base_dir().path_join(file)
+		if source.simplify_path() == destination.simplify_path():
+			continue
+		var input := FileAccess.open(source, FileAccess.READ)
+		var output := FileAccess.open(destination, FileAccess.WRITE)
+		if input and output:
+			output.store_buffer(input.get_buffer(input.get_length()))
+			copied_any = true
+		if input:
+			input.close()
+		if output:
+			output.close()
+	for child in directory.get_directories():
+		copied_any = copy_runtime_dlls_beside_server(root.path_join(child), server_path) or copied_any
+	return copied_any
+
+func complete_cuda_runtime_install() -> void:
+	var server_path := find_file_recursive(cuda_install_root, "llama-server.exe")
+	if server_path.is_empty():
+		fail_cuda_runtime_install("Installation finished, but llama-server.exe was not found")
+		return
+	copy_runtime_dlls_beside_server(cuda_install_root, server_path)
+	if not server_directory_has_acceleration(server_path):
+		fail_cuda_runtime_install("CUDA engine was extracted, but its companion NVIDIA DLLs were not found beside it")
+		return
+	stop_engine()
+	settings.server_path = server_path
+	settings.gpu_layers = 99
+	save_json(SETTINGS_FILE, settings)
+	fields.server_path.text = server_path
+	fields.gpu_layers.text = "99"
+	setup_server_path.text = server_path
+	set_privacy_activity(false)
+	set_cuda_install_controls_enabled(true)
+	if is_instance_valid(cuda_install_status):
+		cuda_install_status.text = "✓ NVIDIA CUDA acceleration installed and selected. SAM will verify it when the model starts."
+	if is_instance_valid(cuda_install_progress):
+		cuda_install_progress.value = 100
+	if is_instance_valid(cuda_install_dialog):
+		cuda_install_dialog.get_ok_button().visible = true
+		cuda_install_dialog.get_ok_button().text = "DONE"
+	refresh_setup_checks(true)
+	highlight_missing_module_requirements()
+	show_toast("CUDA acceleration installed • GPU engine selected")
+	set_status("CUDA INSTALLED • READY TO START", colors.green)
+
+func fail_cuda_runtime_install(message: String) -> void:
+	set_privacy_activity(false)
+	if is_instance_valid(cuda_runtime_request):
+		cuda_runtime_request.cancel_request()
+		cuda_runtime_request.queue_free()
+	cuda_runtime_request = null
+	set_cuda_install_controls_enabled(true)
+	if is_instance_valid(cuda_install_status):
+		cuda_install_status.text = "✕ %s\n\nCPU mode is unchanged and remains available. You can retry from Modules." % message
+	if is_instance_valid(cuda_install_progress):
+		cuda_install_progress.value = 0
+	if is_instance_valid(cuda_install_dialog):
+		cuda_install_dialog.get_ok_button().visible = true
+		cuda_install_dialog.get_ok_button().text = "CLOSE"
+	show_toast(message)
+
+func set_cuda_install_controls_enabled(enabled: bool) -> void:
+	if is_instance_valid(cuda_install_button):
+		cuda_install_button.disabled = not enabled
+	if is_instance_valid(cuda_setup_button):
+		cuda_setup_button.disabled = not enabled
 
 func url_host(url: String) -> String:
 	var without_scheme := url.get_slice("://", 1)
@@ -2100,6 +2331,10 @@ func refresh_setup_checks(show_feedback: bool = false) -> void:
 	runtime_button.disabled = windows_runtime_ok
 	runtime_button.text = "✓ STEP 3 — WINDOWS RUNTIME INSTALLED" if windows_runtime_ok else "STEP 3 — INSTALL WINDOWS RUNTIME (REQUIRED)"
 	apply_missing_requirement_style(runtime_button, not windows_runtime_ok)
+	if is_instance_valid(cuda_setup_button):
+		cuda_setup_button.disabled = cuda_ok or is_instance_valid(cuda_runtime_request)
+		cuda_setup_button.text = "✓ CUDA INSTALLED" if cuda_ok else "⚡ INSTALL NVIDIA CUDA (OPTIONAL)"
+		cuda_setup_button.tooltip_text = "CUDA is already available beside the selected engine" if cuda_ok else "Automatically download both matching official llama.cpp CUDA packages and select the GPU engine"
 	apply_missing_requirement_style($FirstRunSetup/Center/Panel/Margin/Content/ModelRow/BrowseModel, not model_ok)
 	apply_missing_requirement_style($FirstRunSetup/Center/Panel/Margin/Content/ServerRow/BrowseServer, not server_ok)
 	setup_last_required_state = "%s|%s|%s" % [model_ok, server_ok, windows_runtime_ok]
@@ -2554,6 +2789,13 @@ func setting_text(key: String) -> String:
 	return str(settings[key])
 
 func _process(delta: float) -> void:
+	if is_instance_valid(cuda_runtime_request) and is_instance_valid(cuda_install_progress):
+		var total_bytes := cuda_runtime_request.get_body_size()
+		var downloaded_bytes := cuda_runtime_request.get_downloaded_bytes()
+		if total_bytes > 0:
+			var stage_fraction := clampf(float(downloaded_bytes) / float(total_bytes), 0.0, 1.0)
+			cuda_install_progress.value = (stage_fraction * 50.0) + (50.0 if cuda_install_stage == 2 else 0.0)
+			cuda_install_status.text = "%s • %.1f / %.1f MB" % ["Downloading CUDA engine package (1 of 2)…" if cuda_install_stage == 1 else "Downloading NVIDIA runtime DLLs (2 of 2)…", float(downloaded_bytes) / 1048576.0, float(total_bytes) / 1048576.0]
 	if is_instance_valid(setup_overlay) and setup_overlay.visible:
 		setup_check_poll_elapsed += delta
 		if setup_check_poll_elapsed >= 1.0:
@@ -12160,7 +12402,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.4 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.2.5 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
