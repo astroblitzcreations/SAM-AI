@@ -182,6 +182,7 @@ var artifact_repair_prompt := ""
 var artifact_validation_retry_count := 0
 var artifact_total_retry_count := 0
 var artifact_build_dialog: Window
+var artifact_manual_review_window: Window
 var artifact_monitor: Window
 var artifact_monitor_label: Label
 var artifact_monitor_progress: ProgressBar
@@ -278,6 +279,7 @@ var visual_studio: VBoxContainer
 var visual_studio_turn := false
 var visual_studio_frame_count := 81
 var automatic_path_repairs: Dictionary = {}
+var automatic_name_repairs: Dictionary = {}
 var pending_image_capability_request := ""
 var pending_image_capability_path := ""
 var pc_admin_request_active := false
@@ -9262,8 +9264,8 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_repair(path, detail):
 		return
 	if artifact_total_retry_count >= 3:
+		close_artifact_build_monitor()
 		set_actionable_status("AUTO-FIX PAUSED • CLICK FOR MANUAL REVIEW", colors.amber, open_artifact_manual_review, "Open the failed build in Live Preview")
-		set_artifact_monitor_phase("BUILD PAUSED • MANUAL REVIEW NEEDED", "SAM stopped after 3 total rebuild/repair attempts so it cannot loop forever. Open Live Preview or add a new influence before trying again.", 100)
 		show_toast("Build stopped after 3 total attempts • open Live Preview to review it")
 		return
 	artifact_validation_retry_count += 1
@@ -9280,8 +9282,6 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	call_deferred("send_message")
 
 func try_deterministic_python_repair(path: String, detail: String) -> bool:
-	if not detail.begins_with("Possibly undefined names:"):
-		return false
 	var known_constants := {
 		"BLACK": "(0, 0, 0)", "WHITE": "(255, 255, 255)", "GRAY": "(128, 128, 128)",
 		"GREY": "(128, 128, 128)", "RED": "(235, 64, 88)", "GREEN": "(80, 220, 120)",
@@ -9290,9 +9290,38 @@ func try_deterministic_python_repair(path: String, detail: String) -> bool:
 		"PINK": "(255, 120, 180)", "NAVY": "(20, 35, 75)", "TEAL": "(35, 175, 175)"
 	}
 	var additions: Array[String] = []
+	var repaired_names: Array[String] = []
 	for constant_name in known_constants:
 		if detail.contains(str(constant_name) + " (line"):
 			additions.append("%s = %s" % [constant_name, known_constants[constant_name]])
+			repaired_names.append(str(constant_name))
+	# Runtime NameErrors used to bypass deterministic repair and send the exact
+	# same prompt back to the model three times. Extract the identifier directly
+	# from Python's traceback and initialize common application-state names.
+	var runtime_marker := "NameError: name '"
+	var runtime_start := detail.find(runtime_marker)
+	if runtime_start >= 0:
+		runtime_start += runtime_marker.length()
+		var runtime_end := detail.find("'", runtime_start)
+		if runtime_end > runtime_start:
+			var missing_name := detail.substr(runtime_start, runtime_end - runtime_start)
+			var default_value := python_default_for_missing_name(missing_name)
+			var repair_key := path + "::" + missing_name
+			if not default_value.is_empty() and not bool(automatic_name_repairs.get(repair_key, false)):
+				additions.append("%s = %s" % [missing_name, default_value])
+				repaired_names.append(missing_name)
+				automatic_name_repairs[repair_key] = true
+	# Static validation reports can contain non-color state names too.
+	if detail.begins_with("Possibly undefined names:"):
+		var reported := detail.trim_prefix("Possibly undefined names:").split(",")
+		for item in reported:
+			var missing_name := str(item).strip_edges().get_slice(" ", 0)
+			var default_value := python_default_for_missing_name(missing_name)
+			var repair_key := path + "::" + missing_name
+			if not default_value.is_empty() and not repaired_names.has(missing_name) and not bool(automatic_name_repairs.get(repair_key, false)):
+				additions.append("%s = %s" % [missing_name, default_value])
+				repaired_names.append(missing_name)
+				automatic_name_repairs[repair_key] = true
 	if additions.is_empty():
 		return false
 	var source := FileAccess.get_file_as_string(path)
@@ -9309,7 +9338,7 @@ func try_deterministic_python_repair(path: String, detail: String) -> bool:
 	var repaired_lines := PackedStringArray()
 	for index in range(lines.size()):
 		if index == insertion:
-			repaired_lines.append("# SAM deterministic repair: missing color constants")
+			repaired_lines.append("# SAM deterministic repair: missing module state")
 			for definition in additions:
 				repaired_lines.append(definition)
 			repaired_lines.append("")
@@ -9332,12 +9361,35 @@ func try_deterministic_python_repair(path: String, detail: String) -> bool:
 		repaired_code_id = rendered_code_blocks.size() - 1
 	if repaired_code_id >= 0:
 		rendered_code_blocks[repaired_code_id] = repaired
-		reset_artifact_repair_state()
-		set_status("SOURCE AUTO-REPAIRED • READY TO TEST", colors.green)
-		show_toast("SAM repaired missing constants locally • no model retry was needed")
-		show_artifact_result_dialog.call_deferred(repaired_code_id, path, validation)
+		if runtime_start >= 0:
+			artifact_total_retry_count += 1
+			artifact_repair_target_path = path
+			artifact_repair_language = "python"
+			set_status("RUNTIME NAME REPAIRED • RETESTING", colors.green)
+			set_artifact_monitor_phase("LOCAL AUTO-FIX • RETESTING", "Added missing state: %s" % ", ".join(repaired_names), 100)
+			show_toast("SAM added %s locally • supervised retest started" % ", ".join(repaired_names))
+			launch_supervised_retry.call_deferred(path, "python")
+		else:
+			reset_artifact_repair_state()
+			set_status("SOURCE AUTO-REPAIRED • READY TO TEST", colors.green)
+			show_toast("SAM repaired missing module state locally • no model retry was needed")
+			show_artifact_result_dialog.call_deferred(repaired_code_id, path, validation)
 		return true
 	return false
+
+func python_default_for_missing_name(name: String) -> String:
+	if name.is_empty() or not name.is_valid_identifier():
+		return ""
+	var lower := name.to_lower()
+	if lower in ["high_score", "score", "lines", "lines_cleared", "level", "frame", "frame_count", "counter", "count", "points"] or lower.ends_with("_score") or lower.ends_with("_count"):
+		return "0"
+	if lower.begins_with("is_") or lower.begins_with("has_") or lower in ["running", "paused", "game_over", "hold_used", "can_hold"]:
+		return "False"
+	if lower.ends_with("_list") or lower.ends_with("_queue") or lower in ["pieces", "events", "items"]:
+		return "[]"
+	if lower.ends_with("_dict") or lower.ends_with("_map"):
+		return "{}"
+	return ""
 
 func reset_artifact_repair_state() -> void:
 	artifact_repair_target_path = ""
@@ -9354,16 +9406,109 @@ func reset_artifact_repair_state() -> void:
 	close_artifact_build_monitor()
 
 func open_artifact_manual_review() -> void:
+	if is_instance_valid(artifact_manual_review_window):
+		artifact_manual_review_window.show()
+		artifact_manual_review_window.grab_focus()
+		return
 	var tabs: TabContainer = $Page/Tabs
 	var chat_tab := $Page/Tabs/Chat
 	tabs.current_tab = tabs.get_tab_idx_from_control(chat_tab)
-	if not rendered_code_blocks.is_empty():
-		show_code_preview(rendered_code_blocks.size() - 1)
-	elif not artifact_repair_target_path.is_empty() and FileAccess.file_exists(artifact_repair_target_path):
-		attach_file(artifact_repair_target_path)
-		input_box.text = artifact_repair_prompt
-		input_box.grab_focus()
-	show_toast("Manual review opened • inspect the source or add a new influence")
+	var path := artifact_repair_target_path
+	var code_id := -1
+	for index in range(rendered_code_paths.size()):
+		if rendered_code_paths[index] == path:
+			code_id = index
+			break
+	if path.is_empty() and not rendered_code_paths.is_empty():
+		code_id = rendered_code_paths.size() - 1
+		path = rendered_code_paths[code_id]
+	if path.is_empty() or not FileAccess.file_exists(path):
+		show_toast("Manual review could not find the generated source")
+		return
+	var dialog := Window.new()
+	artifact_manual_review_window = dialog
+	dialog.title = "SAM-AI MANUAL BUILD REVIEW"
+	dialog.size = Vector2i(980, 720)
+	dialog.min_size = Vector2i(640, 430)
+	dialog.unresizable = false
+	dialog.transient = true
+	dialog.exclusive = false
+	dialog.close_requested.connect(func(): artifact_manual_review_window = null; dialog.queue_free())
+	var panel := PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color("#081522")
+	panel_style.border_color = colors.amber
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(12)
+	panel.add_theme_stylebox_override("panel", panel_style)
+	dialog.add_child(panel)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 16)
+	margin.add_theme_constant_override("margin_right", 16)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
+	panel.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	margin.add_child(box)
+	var heading := Label.new()
+	heading.text = "AUTO-FIX PAUSED • EDIT THE ACTUAL FILE"
+	heading.add_theme_color_override("font_color", colors.amber)
+	heading.add_theme_font_size_override("font_size", 20)
+	box.add_child(heading)
+	var status := Label.new()
+	status.text = "File: %s\nEdit, paste, save, then rerun. SAM will validate and capture the next crash." % path
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(status)
+	var editor := TextEdit.new()
+	editor.text = FileAccess.get_file_as_string(path)
+	editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	editor.wrap_mode = TextEdit.LINE_WRAPPING_NONE
+	box.add_child(editor)
+	var influence := LineEdit.new()
+	influence.placeholder_text = "Optional repair influence for SAM…"
+	box.add_child(influence)
+	var actions := HFlowContainer.new()
+	box.add_child(actions)
+	var save_source := func() -> bool:
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		if file == null:
+			status.text = "Could not save: " + path
+			return false
+		file.store_string(editor.text)
+		file.close()
+		if code_id >= 0 and code_id < rendered_code_blocks.size(): rendered_code_blocks[code_id] = editor.text
+		var check := validate_staged_text_file(path, editor.text)
+		status.text = ("Saved • " if bool(check.get("ok", false)) else "Saved, but validation still reports: ") + str(check.get("detail", ""))
+		return true
+	actions.add_child(make_button("SAVE", func(): save_source.call(), colors.green))
+	actions.add_child(make_button("COPY ALL", func(): DisplayServer.clipboard_set(editor.text); show_toast("Source copied"), colors.cyan))
+	actions.add_child(make_button("PASTE", func(): editor.insert_text_at_caret(DisplayServer.clipboard_get()), colors.cyan))
+	actions.add_child(make_button("RERUN / TEST", func():
+		if not save_source.call(): return
+		artifact_total_retry_count = 0
+		artifact_validation_retry_count = 0
+		if code_id >= 0: request_run_rendered_code.call_deferred(code_id)
+		else: launch_supervised_retry.call_deferred(path, path.get_extension()), colors.green))
+	actions.add_child(make_button("ASK SAM TO REPAIR", func():
+		if not save_source.call(): return
+		artifact_total_retry_count = 0
+		artifact_validation_retry_count = 0
+		var check := validate_staged_text_file(path, editor.text)
+		var detail := str(check.get("detail", "Manual review requested another repair."))
+		if not influence.text.strip_edges().is_empty(): detail += "\nUser influence: " + influence.text.strip_edges()
+		queue_artifact_auto_fix.call_deferred(path, path.get_extension(), detail), colors.amber))
+	actions.add_child(make_button("OPEN FOLDER", func(): OS.shell_open(path.get_base_dir()), colors.cyan))
+	actions.add_child(make_button("MINIMIZE", func():
+		dialog.hide()
+		set_actionable_status("MANUAL REVIEW MINIMIZED • CLICK TO RESTORE", colors.amber, open_artifact_manual_review, "Restore the editable source review"), colors.muted))
+	actions.add_child(make_button("CLOSE", func(): artifact_manual_review_window = null; dialog.queue_free(), colors.muted))
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	dialog.popup_centered_clamped(Vector2i(980, 720), 0.92)
+	show_toast("Manual review opened • edit, save, copy, paste, rerun, or ask SAM")
 
 func install_python_dependency(package: String, path: String, language: String) -> void:
 	var directory := path.get_base_dir()

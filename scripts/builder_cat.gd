@@ -34,12 +34,16 @@ var state_label: Label
 var text_column: VBoxContainer
 var builder_viewport: SubViewport
 
-const CAT_SCALE := 1.35
+const CAT_SCALE := 0.82
 const CAT_GROUND_Y := 0.08
 const CAT_PLANE_Z := 0.15
 # The supplied mesh's profile axis is its native orientation. A 90-degree yaw
 # shows its chest/head-on, which caused the front-facing screenshots.
 const CAT_SIDE_YAW := 0.0
+const HOUSE_X := -1.65
+const SUPPLY_X := 1.65
+const HOUSE_STOP_X := -1.27
+const SUPPLY_STOP_X := 1.43
 
 func _ready() -> void:
 	custom_minimum_size = Vector2(360, 68)
@@ -104,13 +108,13 @@ func build_scene() -> void:
 		push_warning("Builder cat model could not be loaded; compact monitor will continue without the 3D cat.")
 		return
 	cat_root = cat_scene.instantiate() as Node3D
-	cat_root.position = Vector3(-0.80, CAT_GROUND_Y, CAT_PLANE_Z)
+	cat_root.position = Vector3(HOUSE_STOP_X, CAT_GROUND_Y, CAT_PLANE_Z)
 	cat_root.scale = Vector3.ONE * CAT_SCALE
 	cat_root.rotation_degrees = Vector3(0, CAT_SIDE_YAW, 0)
 	world.add_child(cat_root)
 	animation_player = find_animation_player(cat_root)
 	disable_animation_root_motion()
-	play_run(0.65)
+	play_run(2.35)
 
 func disable_animation_root_motion() -> void:
 	if not is_instance_valid(animation_player):
@@ -126,38 +130,38 @@ func disable_animation_root_motion() -> void:
 				animation.track_set_enabled(track_index, false)
 
 func build_ground_and_house(world: Node3D) -> void:
-	add_box(world, Vector3(0, -0.02, 0), Vector3(4.8, 0.07, 1.15), Color("#18323b"))
+	add_box(world, Vector3(0, -0.02, 0), Vector3(5.6, 0.07, 1.15), Color("#18323b"))
 	var stages := [
-		[Vector3(-1.18, 0.20, 0), Vector3(0.65, 0.40, 0.62), Color("#895a39"), 0.0],
-		[Vector3(-1.18, 0.58, 0), Vector3(0.65, 0.35, 0.62), Color("#a66f45"), 0.0],
-		[Vector3(-1.36, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), 24.0],
-		[Vector3(-1.00, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), -24.0]
+		[Vector3(HOUSE_X, 0.20, 0), Vector3(0.65, 0.40, 0.62), Color("#895a39"), 0.0],
+		[Vector3(HOUSE_X, 0.58, 0), Vector3(0.65, 0.35, 0.62), Color("#a66f45"), 0.0],
+		[Vector3(HOUSE_X - 0.18, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), 24.0],
+		[Vector3(HOUSE_X + 0.18, 0.88, 0), Vector3(0.48, 0.10, 0.72), Color("#c84d55"), -24.0]
 	]
 	for data in stages:
 		var part := add_box(world, data[0], data[1], data[2])
 		part.rotation_degrees.z = data[3]
 		part.visible = false
 		house_stages.append(part)
-	var door := add_box(world, Vector3(-1.18, 0.17, 0.325), Vector3(0.20, 0.31, 0.04), Color("#1b1114"))
+	var door := add_box(world, Vector3(HOUSE_X, 0.17, 0.325), Vector3(0.20, 0.31, 0.04), Color("#1b1114"))
 	var door_mat := door.material_override as StandardMaterial3D
 	door_mat.emission_enabled = true
 	door_mat.emission = Color("#ffb84d")
 	door_mat.emission_energy_multiplier = 1.6
 	house_light = OmniLight3D.new()
-	house_light.position = Vector3(-1.18, 0.45, 0.58)
+	house_light.position = Vector3(HOUSE_X, 0.45, 0.58)
 	house_light.light_color = Color("#ffd477")
 	house_light.light_energy = 0.0
 	house_light.omni_range = 2.2
 	world.add_child(house_light)
 	# Supply depot, sled, load, rope, and final lamp are all separate so the
 	# delivery story remains readable even in the smallest monitor.
-	add_box(world, Vector3(1.15, 0.10, 0), Vector3(0.34, 0.20, 0.34), Color("#c69755"))
+	add_box(world, Vector3(SUPPLY_X, 0.10, 0), Vector3(0.34, 0.20, 0.34), Color("#c69755"))
 	sled = Node3D.new()
 	world.add_child(sled)
 	add_box(sled, Vector3.ZERO, Vector3(0.48, 0.055, 0.28), Color("#a85e35"))
 	add_box(sled, Vector3(-0.16, -0.055, 0.0), Vector3(0.08, 0.08, 0.34), Color("#283640"))
 	add_box(sled, Vector3(0.16, -0.055, 0.0), Vector3(0.08, 0.08, 0.34), Color("#283640"))
-	sled.position = Vector3(1.12, 0.10, CAT_PLANE_Z)
+	sled.position = Vector3(SUPPLY_X, 0.10, CAT_PLANE_Z)
 	sled_blocks = Node3D.new()
 	sled.add_child(sled_blocks)
 	for block_data in [[-0.14, Color("#efb65b")], [0.0, Color("#75d5df")], [0.14, Color("#e9776f")]]:
@@ -165,7 +169,7 @@ func build_ground_and_house(world: Node3D) -> void:
 	sled_blocks.visible = false
 	rope = add_box(world, Vector3(0, 0.17, CAT_PLANE_Z), Vector3(1.0, 0.018, 0.018), Color("#e8d5a7"))
 	rope.visible = false
-	light_item = add_box(world, Vector3(1.15, 0.28, 0.18), Vector3(0.10, 0.16, 0.10), Color("#fff27a"))
+	light_item = add_box(world, Vector3(SUPPLY_X, 0.28, 0.18), Vector3(0.10, 0.16, 0.10), Color("#fff27a"))
 	var light_mat := light_item.material_override as StandardMaterial3D
 	light_mat.emission_enabled = true
 	light_mat.emission = Color("#fff27a")
@@ -173,10 +177,10 @@ func build_ground_and_house(world: Node3D) -> void:
 	light_item.visible = false
 	# A tiny coffee spot remains near the finished house; its steam is driven by
 	# the existing particle system during rests and the final sleep scene.
-	add_box(world, Vector3(-0.58, 0.095, 0.22), Vector3(0.10, 0.15, 0.10), Color("#63c7d4"))
+	add_box(world, Vector3(HOUSE_X + 0.58, 0.095, 0.22), Vector3(0.10, 0.15, 0.10), Color("#63c7d4"))
 	dream_label = Label3D.new()
 	dream_label.text = "Z  z  z\nDreaming of tuna…"
-	dream_label.position = Vector3(-0.72, 1.12, 0.35)
+	dream_label.position = Vector3(HOUSE_X + 0.45, 1.12, 0.35)
 	dream_label.font_size = 28
 	dream_label.modulate = Color("#d9f5ff")
 	dream_label.outline_modulate = Color("#07131f")
@@ -196,9 +200,19 @@ func add_box(parent: Node3D, position: Vector3, box_size: Vector3, color: Color)
 
 func build_particles(world: Node3D) -> void:
 	smoke = make_particles(Color(0.72, 0.78, 0.82, 0.60), 22, 0.85, 0.055)
-	smoke.position = Vector3(-1.05, 0.38, 0.2)
+	smoke.position = Vector3(HOUSE_X + 0.12, 0.48, 0.2)
 	smoke.one_shot = true
 	smoke.explosiveness = 0.92
+	var smoke_process := smoke.process_material as ParticleProcessMaterial
+	smoke_process.gravity = Vector3.ZERO
+	smoke_process.direction = Vector3(0.12, 1.0, 0)
+	smoke_process.spread = 20.0
+	smoke_process.initial_velocity_min = 0.38
+	smoke_process.initial_velocity_max = 0.70
+	smoke_process.scale_min = 0.7
+	smoke_process.scale_max = 1.6
+	var smoke_quad := smoke.draw_pass_1 as QuadMesh
+	smoke_quad.material = soft_puff_material(Color(0.74, 0.79, 0.84, 0.48))
 	world.add_child(smoke)
 	rain = make_particles(Color(0.35, 0.68, 1.0, 0.70), 80, 1.1, 0.018)
 	var rain_process := rain.process_material as ParticleProcessMaterial
@@ -210,7 +224,11 @@ func build_particles(world: Node3D) -> void:
 	rain.position = Vector3(0, 1.55, 0.25)
 	world.add_child(rain)
 	steam = make_particles(Color(0.82, 0.88, 0.90, 0.38), 10, 1.2, 0.025)
-	steam.position = Vector3(-0.58, 0.30, 0.24)
+	steam.position = Vector3(HOUSE_X + 0.58, 0.30, 0.24)
+	var steam_process := steam.process_material as ParticleProcessMaterial
+	steam_process.gravity = Vector3.ZERO
+	var steam_quad := steam.draw_pass_1 as QuadMesh
+	steam_quad.material = soft_puff_material(Color(0.82, 0.88, 0.92, 0.30))
 	world.add_child(steam)
 	smoke.emitting = false
 	rain.emitting = false
@@ -244,6 +262,14 @@ func material(color: Color) -> StandardMaterial3D:
 	value.roughness = 0.8
 	value.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if color.a < 0.99 else BaseMaterial3D.TRANSPARENCY_DISABLED
 	return value
+
+func soft_puff_material(color: Color) -> ShaderMaterial:
+	var shader := Shader.new()
+	shader.code = "shader_type spatial; render_mode unshaded, cull_disabled, blend_mix, depth_draw_opaque; uniform vec4 puff_color : source_color; void fragment(){ float d = length(UV - vec2(0.5)) * 2.0; float soft = 1.0 - smoothstep(0.25, 1.0, d); ALBEDO = puff_color.rgb; ALPHA = soft * puff_color.a; }"
+	var shader_material := ShaderMaterial.new()
+	shader_material.shader = shader
+	shader_material.set_shader_parameter("puff_color", color)
+	return shader_material
 
 func build_labels() -> void:
 	progress_label = Label.new()
@@ -304,16 +330,16 @@ func _process(delta: float) -> void:
 			set_sled_loaded(false)
 			cat_is_moving = true
 			cat_dir = 1.0
-			cat_root.position.x = move_toward(cat_root.position.x, 1.02, delta * 0.78)
-			if cat_root.position.x >= 0.99:
+			cat_root.position.x = move_toward(cat_root.position.x, SUPPLY_STOP_X, delta * 0.78)
+			if cat_root.position.x >= SUPPLY_STOP_X - 0.03:
 				set_sled_loaded(true)
 				set_state("carrying")
 		"carrying":
 			cat_is_moving = true
 			cat_dir = -1.0
-			cat_root.position.x = move_toward(cat_root.position.x, -0.83, delta * 0.62)
+			cat_root.position.x = move_toward(cat_root.position.x, HOUSE_STOP_X, delta * 0.62)
 			update_sled_and_rope()
-			if cat_root.position.x <= -0.80:
+			if cat_root.position.x <= HOUSE_STOP_X + 0.03:
 				set_sled_loaded(false)
 				built_stage = mini(pending_stage, built_stage + 1)
 				for index in range(house_stages.size()): house_stages[index].visible = index < built_stage
@@ -327,15 +353,15 @@ func _process(delta: float) -> void:
 				set_state("fetch_light" if _progress >= 90.0 and built_stage >= 4 else "fetching")
 		"fetch_light":
 			cat_dir = 1.0
-			cat_root.position.x = move_toward(cat_root.position.x, 1.03, delta * 0.72)
-			if cat_root.position.x >= 1.0:
+			cat_root.position.x = move_toward(cat_root.position.x, SUPPLY_STOP_X, delta * 0.72)
+			if cat_root.position.x >= SUPPLY_STOP_X - 0.03:
 				light_item.visible = true
 				set_state("carrying_light")
 		"carrying_light":
 			cat_dir = -1.0
-			cat_root.position.x = move_toward(cat_root.position.x, -0.86, delta * 0.58)
+			cat_root.position.x = move_toward(cat_root.position.x, HOUSE_STOP_X, delta * 0.58)
 			light_item.position = cat_root.position + Vector3(-0.02, 0.34, 0.05)
-			if cat_root.position.x <= -0.83:
+			if cat_root.position.x <= HOUSE_STOP_X + 0.03:
 				light_item.visible = false
 				set_state("install_light")
 		"install_light":
@@ -343,16 +369,16 @@ func _process(delta: float) -> void:
 				house_light.light_energy = 2.4
 				set_state("sleep")
 		"sleep":
-			cat_root.position.x = -0.72
+			cat_root.position.x = HOUSE_X + 0.45
 			steam.emitting = true
 			dream_label.visible = true
 			dream_label.modulate.a = 0.55 + sin(Time.get_ticks_msec() / 600.0) * 0.35
 		"running", "scared":
 			cat_dir = -1.0
-			cat_root.position.x = move_toward(cat_root.position.x, -1.18, delta * 1.8)
-			if cat_root.position.x <= -1.12: set_state("shelter")
-		"coffee": cat_root.position.x = move_toward(cat_root.position.x, -0.12, delta * 0.45)
-		"celebrate": cat_root.position.x = -0.72 + sin(Time.get_ticks_msec() / 150.0) * 0.12
+			cat_root.position.x = move_toward(cat_root.position.x, HOUSE_X, delta * 1.8)
+			if cat_root.position.x <= HOUSE_X + 0.06: set_state("shelter")
+		"coffee": cat_root.position.x = move_toward(cat_root.position.x, HOUSE_X + 0.58, delta * 0.45)
+		"celebrate": cat_root.position.x = HOUSE_X + 0.45 + sin(Time.get_ticks_msec() / 150.0) * 0.12
 	# Reassert the two-dimensional lane after animation evaluation. Direction is
 	# represented by a mirror, never by rotating the model into camera depth.
 	cat_root.position.y = CAT_GROUND_Y
@@ -365,7 +391,7 @@ func set_sled_loaded(loaded: bool) -> void:
 	if is_instance_valid(sled_blocks): sled_blocks.visible = loaded
 	if is_instance_valid(sled): sled.visible = loaded or cat_state == "fetching"
 	if is_instance_valid(rope): rope.visible = loaded
-	if not loaded and is_instance_valid(sled): sled.position = Vector3(1.12, 0.10, CAT_PLANE_Z)
+	if not loaded and is_instance_valid(sled): sled.position = Vector3(SUPPLY_X, 0.10, CAT_PLANE_Z)
 
 func update_sled_and_rope() -> void:
 	if not is_instance_valid(sled) or not is_instance_valid(rope): return
@@ -398,7 +424,7 @@ func set_state(next: String) -> void:
 	steam.emitting = next in ["coffee", "sleep"]
 	if is_instance_valid(dream_label): dream_label.visible = next == "sleep"
 	cat_root.visible = next != "shelter"
-	if next in ["fetching", "carrying", "fetch_light", "carrying_light", "running", "scared", "building", "celebrate"]: play_run(2.0 if next in ["running", "scared"] else (1.15 if next in ["fetching", "carrying", "fetch_light", "carrying_light"] else 0.55))
+	if next in ["fetching", "carrying", "fetch_light", "carrying_light", "running", "scared"]: play_run(3.2 if next in ["running", "scared"] else (2.35 if next in ["fetching", "fetch_light"] else 2.05))
 	elif is_instance_valid(animation_player): animation_player.pause()
 
 func find_animation_player(root: Node) -> AnimationPlayer:
@@ -412,8 +438,12 @@ func play_run(speed := 1.0) -> void:
 	if not is_instance_valid(animation_player): return
 	for animation_name in animation_player.get_animation_list():
 		if str(animation_name).to_lower() != "reset":
+			var animation := animation_player.get_animation(animation_name)
+			if animation != null:
+				animation.loop_mode = Animation.LOOP_LINEAR
 			animation_player.speed_scale = speed
-			animation_player.play(animation_name)
+			if animation_player.current_animation != animation_name or not animation_player.is_playing():
+				animation_player.play(animation_name)
 			return
 
 func update_text() -> void:
