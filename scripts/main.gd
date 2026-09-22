@@ -8467,6 +8467,9 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	actions.add_child(run_button)
 	actions.add_child(make_button("LIVE PREVIEW", func(): dialog.queue_free(); show_code_preview.call_deferred(code_id), colors.cyan))
 	actions.add_child(make_button("OPEN FOLDER", func(): OS.shell_open(path.get_base_dir()), colors.cyan))
+	actions.add_child(make_button("＋ ADD MORE / IMPROVE", func():
+		dialog.queue_free()
+		show_artifact_enhancement_dialog.call_deferred(code_id, path), colors.amber))
 	actions.add_child(make_button("SEND INFLUENCE", func():
 		var extra := influence.text.strip_edges()
 		if extra.is_empty():
@@ -8481,6 +8484,95 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	add_child(dialog)
 	apply_theme_recursive(dialog)
 	dialog.popup_centered_clamped(Vector2i(780, 540), 0.84)
+
+func show_artifact_enhancement_dialog(code_id: int, path: String) -> void:
+	if not FileAccess.file_exists(path):
+		show_toast("The working source could not be found")
+		return
+	var dialog := Window.new()
+	dialog.title = "SAM-AI • ADD MORE TO THIS BUILD"
+	dialog.size = Vector2i(860, 620)
+	dialog.min_size = Vector2i(620, 430)
+	dialog.unresizable = false
+	dialog.transient = true
+	dialog.exclusive = false
+	dialog.close_requested.connect(dialog.queue_free)
+	var panel := PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color("#081522")
+	panel_style.border_color = colors.amber
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(12)
+	panel.add_theme_stylebox_override("panel", panel_style)
+	dialog.add_child(panel)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 18)
+	margin.add_theme_constant_override("margin_right", 18)
+	margin.add_theme_constant_override("margin_top", 16)
+	margin.add_theme_constant_override("margin_bottom", 16)
+	panel.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	margin.add_child(box)
+	var heading := Label.new()
+	heading.text = "ADD FEATURES WITHOUT LOSING THE WORKING VERSION"
+	heading.add_theme_color_override("font_color", colors.amber)
+	heading.add_theme_font_size_override("font_size", 20)
+	box.add_child(heading)
+	var status := Label.new()
+	status.text = "Working file: %s\nSAM will save a revision checkpoint first, modify this same project, validate it, and leave the previous version recoverable." % path
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(status)
+	var request := TextEdit.new()
+	request.placeholder_text = "Tell SAM what to add: new gameplay, menus, AI opponents, sound, polish, accessibility, levels, controls…"
+	request.custom_minimum_size = Vector2(0, 150)
+	request.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	request.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	box.add_child(request)
+	var workflow := Label.new()
+	workflow.text = "Revision workflow: PLAN → MODIFY → VALIDATE → TEST. This is a staged local workflow, not uncontrolled self-copying."
+	workflow.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	workflow.add_theme_color_override("font_color", colors.muted)
+	box.add_child(workflow)
+	var actions := HFlowContainer.new()
+	actions.add_theme_constant_override("h_separation", 8)
+	actions.add_theme_constant_override("v_separation", 6)
+	box.add_child(actions)
+	actions.add_child(make_button("✦ ASK SAM FOR IDEAS", func():
+		request.text = "Review the existing working game and add a focused improvement pack: persistent high scores and settings, clear controls/help, sound and visual feedback, pause/restart polish, accessibility options, and one well-integrated new gameplay feature. Preserve the current rules and controls. Do not add placeholders."
+		request.grab_focus()
+		request.set_caret_line(request.get_line_count() - 1)
+		status.text = "SAM suggested a practical improvement pack. Edit the request below, then create the revision."
+	, colors.cyan))
+	actions.add_child(make_button("CREATE REVISION + BUILD", func():
+		var addition := request.text.strip_edges()
+		if addition.is_empty():
+			show_toast("Tell SAM what you want to add, or use Ask SAM for Ideas")
+			return
+		var checkpoint := file_revision_backup(path, "before-user-enhancement")
+		if checkpoint.is_empty():
+			status.text = "Could not make the safety revision, so SAM refused to change the working file."
+			return
+		artifact_repair_target_path = path
+		artifact_repair_language = path.get_extension()
+		artifact_repair_prompt = "Enhance the attached WORKING source in place. Preserve every existing working feature and control. Make only coherent changes needed for the requested additions. Fix any directly related defects you find. Return exactly one complete corrected file in one fenced code block, with no tutorial, placeholders, omitted sections, or split files. Before answering, perform three internal passes: plan the smallest safe change, implement it, then check state transitions and runtime edge cases. Requested additions:\n\n%s" % addition
+		artifact_total_retry_count = 0
+		artifact_validation_retry_count = 0
+		artifact_auto_retry_count = 0
+		artifact_build_confirmed_once = true
+		attach_file(path)
+		input_box.text = artifact_repair_prompt
+		dialog.queue_free()
+		set_status("ENHANCEMENT REVISION SAVED • SAM IS BUILDING", colors.amber)
+		show_toast("Working revision preserved • enhancement build started")
+		call_deferred("send_message")
+	, colors.green))
+	actions.add_child(make_button("OPEN FOLDER", func(): OS.shell_open(path.get_base_dir()), colors.cyan))
+	actions.add_child(make_button("CLOSE", dialog.queue_free, colors.muted))
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	dialog.popup_centered_clamped(Vector2i(860, 620), 0.9)
 
 func prepare_rendered_code_in_workspace(code_id: int) -> String:
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
@@ -9261,6 +9353,8 @@ func show_missing_dependency_dialog(module: String, path: String, language: Stri
 func queue_artifact_auto_fix(path: String, language: String, detail: String) -> void:
 	if not FileAccess.file_exists(path):
 		return
+	if language.to_lower() in ["python", "py"] and try_deterministic_python_none_piece_repair(path, detail):
+		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_call_repair(path, detail):
 		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_repair(path, detail):
@@ -9293,6 +9387,54 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	set_artifact_monitor_phase("AUTO-FIX • TOTAL ATTEMPT %d OF 3" % artifact_total_retry_count, detail.left(500), 0)
 	show_toast("Auto-fix caught an error • total attempt %d of 3" % artifact_total_retry_count)
 	call_deferred("send_message")
+
+func try_deterministic_python_none_piece_repair(path: String, detail: String) -> bool:
+	# Generated falling-block games commonly implement the first hold as a tuple
+	# swap with an empty slot. That assigns None to current_piece and the next draw
+	# crashes in piece['shape']. Repair the state transition itself; do not hide it
+	# behind a draw guard and do not regenerate the rest of the game.
+	if not detail.contains("TypeError: 'NoneType' object is not subscriptable"):
+		return false
+	if not detail.contains("draw_piece") or not detail.contains("piece['shape']"):
+		return false
+	var repair_key := path + "::none-current-piece-hold"
+	if bool(automatic_name_repairs.get(repair_key, false)):
+		return false
+	var source := FileAccess.get_file_as_string(path)
+	if source.is_empty() or not source.contains("hold_piece, current_piece = current_piece, hold_piece"):
+		return false
+	var repaired := source
+	if not repaired.contains("hold_used = False"):
+		var hold_declaration := "hold_piece = None"
+		if not repaired.contains(hold_declaration):
+			return false
+		repaired = repaired.replace(hold_declaration, hold_declaration + "\nhold_used = False")
+	var lock_old := "global board, current_piece, score, lines_cleared, level, lock_delay"
+	if repaired.contains(lock_old) and not repaired.contains(lock_old + ", hold_used"):
+		repaired = repaired.replace(lock_old, lock_old + ", hold_used")
+	var create_then_delay := "    create_piece()\n    lock_delay = 30"
+	if repaired.contains(create_then_delay):
+		repaired = repaired.replace(create_then_delay, "    create_piece()\n    hold_used = False\n    lock_delay = 30")
+	var broken_hold := "                elif event.key == pygame.K_c or event.key == pygame.K_LSHIFT:\n                    if hold_piece is None:\n                        hold_piece, current_piece = current_piece, hold_piece\n                    else:\n                        hold_piece, current_piece = current_piece, hold_piece"
+	if not repaired.contains(broken_hold):
+		return false
+	var safe_hold := "                elif event.key == pygame.K_c or event.key == pygame.K_LSHIFT:\n                    if not hold_used:\n                        if hold_piece is None:\n                            hold_piece = current_piece\n                            create_piece()\n                        else:\n                            hold_piece, current_piece = current_piece, hold_piece\n                        current_piece['x'] = GRID_WIDTH // 2 - len(current_piece['shape'][0]) // 2\n                        current_piece['y'] = 0\n                        hold_used = True"
+	repaired = repaired.replace(broken_hold, safe_hold)
+	if repaired == source or not safely_replace_text_file(path, repaired, "deterministic-hold-state"):
+		return false
+	automatic_name_repairs[repair_key] = true
+	for code_id in range(rendered_code_paths.size()):
+		if rendered_code_paths[code_id] == path:
+			rendered_code_blocks[code_id] = repaired
+			break
+	artifact_total_retry_count += 1
+	artifact_repair_target_path = path
+	artifact_repair_language = "python"
+	set_status("HOLD STATE PATCHED • RETESTING SAME FILE", colors.green)
+	set_artifact_monitor_phase("LOCAL STATE PATCH • RETESTING", "Fixed the hold transition that assigned None to the active piece. No full rebuild was performed.", 100)
+	show_toast("Fixed the actual hold-state line • retesting the same project")
+	launch_supervised_retry.call_deferred(path, "python")
+	return true
 
 func try_deterministic_python_call_repair(path: String, detail: String) -> bool:
 	var type_marker := "TypeError: "
@@ -9586,7 +9728,9 @@ func open_artifact_manual_review() -> void:
 		artifact_total_retry_count = 0
 		artifact_validation_retry_count = 0
 		var check := validate_staged_text_file(path, editor.text)
-		var detail := str(check.get("detail", "Manual review requested another repair."))
+		# Static syntax validation cannot reproduce a runtime traceback. Keep the
+		# captured failure so deterministic repair sees the actual failing state.
+		var detail := artifact_repair_prompt if not artifact_repair_prompt.is_empty() else str(check.get("detail", "Manual review requested another repair."))
 		if not influence.text.strip_edges().is_empty(): detail += "\nUser influence: " + influence.text.strip_edges()
 		queue_artifact_auto_fix.call_deferred(path, path.get_extension(), detail), colors.amber))
 	actions.add_child(make_button("OPEN FOLDER", func(): OS.shell_open(path.get_base_dir()), colors.cyan))
