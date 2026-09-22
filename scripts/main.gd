@@ -204,6 +204,7 @@ var sent_messages: Array[String] = []
 var history_cursor := -1
 var history_draft := ""
 var attached_image_path := ""
+var attached_image_paths: Array[String] = []
 var attached_file_path := ""
 var attached_file_text := ""
 var attached_file_kind := ""
@@ -3261,13 +3262,10 @@ func send_message() -> void:
 		if wants_image_context:
 			restore_recent_image_context(user_text)
 		elif not attached_image_path.is_empty():
-			# An image can remain visible after a completed Studio job, a restored
-			# session, or an abandoned attachment. Never let it silently change the
-			# model used by a later text/code turn. Image context is deliberately
-			# opt-in: the message must mention the image, picture, photo, or edit.
-			var detached_name := attached_image_path.get_file()
-			clear_attachment()
-			log_line("ROUTER", "Detached stale image before text request: %s" % detached_name)
+			# A screenshot explicitly pasted, dropped, or selected for this pending
+			# turn is intentional evidence even when the user only says "it froze"
+			# or "add a clock". Keep it attached and let vision connect it to text.
+			log_line("ROUTER", "Using attached screenshot evidence for this turn")
 	if handle_primary_model_command(user_text):
 		return
 	if studio_turn:
@@ -3567,6 +3565,8 @@ func send_message() -> void:
 			protected_tail_start = messages.size()
 		if index == history.size() - 1 and item.role == "user" and command_center_turn and command_center_stage == "vision_diagnose" and not command_center_image_paths.is_empty() and not active_mmproj.is_empty():
 			messages.append({"role": "user", "content": make_multimodal_content_from_paths(request_text + vault_turn_suffix, command_center_image_paths)})
+		elif index == history.size() - 1 and item.role == "user" and not attached_image_paths.is_empty() and not active_mmproj.is_empty():
+			messages.append({"role": "user", "content": make_multimodal_content_from_paths(str(item.content) + vault_turn_suffix, attached_image_paths)})
 		elif index == history.size() - 1 and item.role == "user" and not attached_image_path.is_empty() and not active_mmproj.is_empty():
 			messages.append({"role": "user", "content": make_multimodal_content(str(item.content) + vault_turn_suffix)})
 		elif index == history.size() - 1 and item.role == "user" and not attached_file_text.is_empty():
@@ -5841,7 +5841,16 @@ func finish_generation() -> void:
 	var artifact_masks_entire_image := active_image_edit_action and (cleaned.contains("draw.rectangle([0, 0, img.size[0], img.size[1]]") or cleaned.contains("draw.rectangle([(0, 0), (img.width, img.height)]") or cleaned.contains("shirt_area = [(0, 0, img.size[0], img.size[1])]") or cleaned.contains("ImageOps.colorize(img"))
 	var artifact_shadows_pillow_image := active_image_edit_action and cleaned.contains("from IPython.display import Image")
 	var artifact_uses_wrong_image := active_image_edit_action and not attached_image_path.is_empty() and not cleaned.contains(attached_image_path.get_file())
-	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image):
+	var request_lower := active_artifact_request.to_lower()
+	var game_request := request_lower.contains("game")
+	var game_source := cleaned_lower
+	var artifact_game_missing_restart := game_request and (request_lower.contains("restart") or request_lower.contains("gameover") or request_lower.contains("game over")) and not (game_source.contains("reset_game") or game_source.contains("new_game") or game_source.contains("start_game"))
+	var artifact_game_missing_combat := game_request and (request_lower.contains("shoot") or request_lower.contains("attack") or request_lower.contains("enemies")) and not (game_source.contains("bullet") or game_source.contains("projectile") or game_source.contains("shot") or game_source.contains("attack"))
+	var artifact_game_missing_npcs := game_request and (request_lower.contains("people") or request_lower.contains("npc") or request_lower.contains("talk")) and not (game_source.contains("npc") or game_source.contains("dialog") or game_source.contains("story"))
+	var artifact_game_missing_interiors := game_request and (request_lower.contains("enter buildings") or request_lower.contains("enter a house") or request_lower.contains("inside")) and not (game_source.contains("interior") or game_source.contains("inside_house") or game_source.contains("current_house"))
+	var artifact_game_missing_persistence := game_request and (request_lower.contains("remember") or request_lower.contains("high score") or request_lower.contains("scores")) and not (game_source.contains("json") or game_source.contains("save_game") or game_source.contains("high_score_file"))
+	var artifact_game_too_small := game_request and active_artifact_language == "Python" and cleaned.length() < 8500
+	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
 		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and not active_artifact_request.is_empty():
 			artifact_auto_retry_count += 1
@@ -10108,11 +10117,14 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 			return
 		show_toast("No readable file was found in that drop")
 		return
+	var accepted := 0
 	for path in files:
 		if FileAccess.file_exists(path):
-			show_toast("Preparing %s…" % path.get_file())
-			call_deferred("attach_file", path)
-			return
+			accepted += 1
+			attach_file(path)
+	if accepted > 0:
+		show_toast("Attached %d dropped item%s" % [accepted, "" if accepted == 1 else "s"])
+		return
 	show_toast("No readable file was found in that drop")
 
 func show_attachment_action_dialog() -> void:
@@ -10192,8 +10204,8 @@ func attach_file(path: String) -> bool:
 	var image_extensions := ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
 	var code_extensions := ["gd", "gdshader", "tscn", "tres", "godot", "glsl", "hlsl", "shader", "compute", "inc", "py", "js", "ts", "tsx", "jsx", "cs", "cpp", "c", "h", "hpp", "java", "rs", "go", "html", "css", "scss", "sql", "sh", "ps1", "bat"]
 	var text_extensions := ["txt", "md", "log", "json", "jsonl", "csv", "tsv", "xml", "yaml", "yml", "ini", "cfg", "conf", "toml", "env", "gitignore", "dockerfile", "license", "manifest"]
-	clear_attachment()
 	if extension == "zip":
+		clear_attachment()
 		show_zip_archive_dialog(path)
 		return true
 	if extension in image_extensions:
@@ -10201,6 +10213,11 @@ func attach_file(path: String) -> bool:
 		if preview_image.is_empty():
 			show_toast("That image could not be decoded")
 			return false
+		if attached_image_paths.size() >= 6:
+			show_toast("Chat supports up to 6 screenshots per message")
+			return false
+		if not attached_image_paths.has(path):
+			attached_image_paths.append(path)
 		attached_image_path = path
 		var preview_longest := maxi(preview_image.get_width(), preview_image.get_height())
 		if preview_longest > 640:
@@ -10211,11 +10228,16 @@ func attach_file(path: String) -> bool:
 		attachment_tools.visible = true
 		attachment_snippet.visible = false
 		var vision_ready := (FileAccess.file_exists(str(settings.vision_model_path)) and FileAccess.file_exists(str(settings.vision_mmproj_path))) or not str(settings.mmproj_path).is_empty()
-		attachment_label.text = "🖼 %s • %s" % [path.get_file(), "vision ready" if vision_ready else "preview only — configure a vision model + MMPROJ"]
+		attachment_label.text = "🖼 %d screenshot%s • latest: %s • %s" % [attached_image_paths.size(), "" if attached_image_paths.size() == 1 else "s", path.get_file(), "vision ready" if vision_ready else "preview only — configure a vision model + MMPROJ"]
 		attachment_label.add_theme_color_override("font_color", colors.green if vision_ready else colors.amber)
 		input_box.grab_focus()
 		return true
 	if extension in code_extensions or extension in text_extensions:
+		# A source file and up to six screenshots can describe the same bug. Keep
+		# visual evidence when source/log text is added after pasted images.
+		attached_file_path = ""
+		attached_file_text = ""
+		attached_file_kind = ""
 		var source := FileAccess.open(path, FileAccess.READ)
 		if source == null:
 			show_toast("The file could not be opened")
@@ -10653,6 +10675,7 @@ func scan_godot_project(project_root: String) -> void:
 
 func clear_attachment() -> void:
 	attached_image_path = ""
+	attached_image_paths.clear()
 	attached_file_path = ""
 	attached_file_text = ""
 	attached_file_kind = ""
