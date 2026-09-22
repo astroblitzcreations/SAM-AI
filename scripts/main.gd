@@ -8368,19 +8368,35 @@ func code_extension_for(language: String) -> String:
 func show_code_preview(code_id: int) -> void:
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
 		return
-	var dialog := AcceptDialog.new()
+	# AcceptDialog is exclusive by design. Opening it from Build Ready or Manual
+	# Review raced the still-closing parent and produced Godot's "another exclusive
+	# child" error. A regular non-exclusive Window is the correct preview surface.
+	var dialog := Window.new()
 	dialog.title = "SAM-AI GENERATED CODE PREVIEW"
-	dialog.ok_button_text = "CLOSE"
+	dialog.size = Vector2i(960, 650)
+	dialog.min_size = Vector2i(620, 420)
+	dialog.unresizable = false
+	dialog.transient = true
+	dialog.exclusive = false
+	dialog.close_requested.connect(dialog.queue_free)
+	var box := VBoxContainer.new()
+	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	box.add_theme_constant_override("separation", 8)
+	dialog.add_child(box)
 	var editor := TextEdit.new()
 	editor.text = rendered_code_blocks[code_id]
 	editor.editable = true
-	editor.custom_minimum_size = Vector2(900, 560)
-	dialog.add_child(editor)
-	dialog.confirmed.connect(dialog.queue_free)
+	editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	editor.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	editor.wrap_mode = TextEdit.LINE_WRAPPING_NONE
+	box.add_child(editor)
+	var actions := HFlowContainer.new()
+	box.add_child(actions)
+	actions.add_child(make_button("COPY ALL", func(): DisplayServer.clipboard_set(editor.text); show_toast("Source copied"), colors.cyan))
+	actions.add_child(make_button("CLOSE", dialog.queue_free, colors.muted))
 	add_child(dialog)
 	apply_theme_recursive(dialog)
-	style_security_dialog(dialog, colors.cyan)
-	dialog.popup_centered(Vector2i(960, 650))
+	dialog.popup_centered_clamped(Vector2i(960, 650), 0.92)
 
 func extract_first_fenced_code(content: String) -> String:
 	var fence_start := content.find("```")
@@ -8404,7 +8420,7 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	dialog.max_size = Vector2i(900, 680)
 	dialog.size = Vector2i(780, 540)
 	dialog.transient = true
-	dialog.exclusive = true
+	dialog.exclusive = false
 	dialog.unresizable = false
 	dialog.close_requested.connect(dialog.queue_free)
 	var panel := PanelContainer.new()
