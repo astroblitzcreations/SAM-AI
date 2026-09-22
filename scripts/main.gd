@@ -9375,16 +9375,17 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_repair(path, detail):
 		return
-	# Never replace an entire file merely because one runtime line failed. If a
-	# traceback is not covered by a safe local patch, preserve the source and open
-	# the editable review flow instead of asking the model to regenerate it.
-	if language.to_lower() in ["python", "py"] and (detail.contains("Traceback (most recent call last)") or detail.contains("TypeError:") or detail.contains("NameError:") or detail.contains("AttributeError:") or detail.contains("IndexError:")):
+	# Give an unsupported runtime failure one model-assisted repair attempt. The
+	# validated staged replacement path creates a revision backup first. If that
+	# same source fails again, stop and open review instead of looping forever.
+	var unsupported_python_runtime := language.to_lower() in ["python", "py"] and (detail.contains("Traceback (most recent call last)") or detail.contains("TypeError:") or detail.contains("NameError:") or detail.contains("AttributeError:") or detail.contains("IndexError:"))
+	if unsupported_python_runtime and artifact_total_retry_count >= 1:
 		artifact_repair_target_path = path
 		artifact_repair_language = language
 		artifact_repair_prompt = detail.left(3500)
 		close_artifact_build_monitor()
 		set_actionable_status("RUNTIME PATCH NEEDS REVIEW • CLICK TO EDIT", colors.amber, open_artifact_manual_review, "Edit and rerun the same source file")
-		show_toast("The original file was preserved • unsupported runtime patch opened for review")
+		show_toast("Automatic runtime repair was already attempted • original file preserved for review")
 		return
 	if artifact_total_retry_count >= 3:
 		close_artifact_build_monitor()
@@ -9396,7 +9397,7 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	artifact_repair_target_path = path
 	artifact_repair_language = language
 	attach_file(path)
-	artifact_repair_prompt = "Repair the attached generated source. Return exactly one complete corrected file, preserve every requested feature, and do not use placeholders. Validation/runtime failure:\n\n%s" % detail.left(1800)
+	artifact_repair_prompt = "Repair the attached generated source in place. Diagnose the root state/control-flow cause, not only the final exception line. Preserve every requested feature and return exactly one complete corrected file with no placeholders. Check initialization order, every input path, piece/state representation, timers, window bounds, and restart/pause/hold transitions before answering. Validation/runtime failure:\n\n%s" % detail.left(1800)
 	input_box.text = artifact_repair_prompt
 	artifact_build_confirmed_once = true
 	set_status("AUTO-FIX • ASKING SAM TO REPAIR THE BUILD", colors.amber)

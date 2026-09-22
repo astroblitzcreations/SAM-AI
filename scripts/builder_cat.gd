@@ -15,6 +15,11 @@ var lightning_timer := 0.0
 var cat_root: Node3D
 var animation_player: AnimationPlayer
 var house_stages: Array[Node3D] = []
+var house_finish_parts: Array[Node3D] = []
+var stars: Array[Node3D] = []
+var sun: MeshInstance3D
+var moon: MeshInstance3D
+var clouds: Node3D
 var smoke: GPUParticles3D
 var rain: GPUParticles3D
 var steam: GPUParticles3D
@@ -29,6 +34,9 @@ var dream_label: Label3D
 var scene_environment: Environment
 var day_light: DirectionalLight3D
 var night_amount := 0.0
+var world_time := 0.18
+var comedy_timer := 0.0
+var comedy_index := 0
 var progress_label: Label
 var state_label: Label
 var text_column: VBoxContainer
@@ -101,6 +109,7 @@ func build_scene() -> void:
 	lightning.light_color = Color("#d9eeff")
 	lightning.omni_range = 8.0
 	world.add_child(lightning)
+	build_sky(world)
 	build_ground_and_house(world)
 	build_particles(world)
 	var cat_scene := load("res://assets/models/builder_cat/builder_cat_run.glb") as PackedScene
@@ -142,6 +151,29 @@ func build_ground_and_house(world: Node3D) -> void:
 		part.rotation_degrees.z = data[3]
 		part.visible = false
 		house_stages.append(part)
+	# The finished home is a proper tiny lodge: porch, chimney, glowing windows,
+	# roof trim, flower boxes, and a lookout loft instead of a plain brown cube.
+	for data in [
+		[Vector3(HOUSE_X - 0.43, 0.12, 0.30), Vector3(0.18, 0.24, 0.10), Color("#6bc9e8")],
+		[Vector3(HOUSE_X + 0.43, 0.12, 0.30), Vector3(0.18, 0.24, 0.10), Color("#6bc9e8")],
+		[Vector3(HOUSE_X, 0.02, 0.42), Vector3(1.25, 0.07, 0.40), Color("#8a5c3d")],
+		[Vector3(HOUSE_X - 0.50, 0.38, 0.34), Vector3(0.07, 0.72, 0.07), Color("#d5a96d")],
+		[Vector3(HOUSE_X + 0.50, 0.38, 0.34), Vector3(0.07, 0.72, 0.07), Color("#d5a96d")],
+		[Vector3(HOUSE_X + 0.36, 1.08, 0.02), Vector3(0.16, 0.52, 0.22), Color("#70534c")],
+		[Vector3(HOUSE_X, 1.06, 0.03), Vector3(1.10, 0.06, 0.76), Color("#f1b85b")],
+		[Vector3(HOUSE_X, 1.23, 0.02), Vector3(0.34, 0.28, 0.38), Color("#96633d")]
+	]:
+		var detail := add_box(world, data[0], data[1], data[2])
+		detail.visible = false
+		house_finish_parts.append(detail)
+	for offset in [-0.34, 0.34]:
+		var window := add_box(world, Vector3(HOUSE_X + offset, 0.52, 0.335), Vector3(0.20, 0.20, 0.035), Color("#ffe77a"))
+		var window_mat := window.material_override as StandardMaterial3D
+		window_mat.emission_enabled = true
+		window_mat.emission = Color("#ffd76a")
+		window_mat.emission_energy_multiplier = 1.8
+		window.visible = false
+		house_finish_parts.append(window)
 	var door := add_box(world, Vector3(HOUSE_X, 0.17, 0.325), Vector3(0.20, 0.31, 0.04), Color("#1b1114"))
 	var door_mat := door.material_override as StandardMaterial3D
 	door_mat.emission_enabled = true
@@ -187,6 +219,37 @@ func build_ground_and_house(world: Node3D) -> void:
 	dream_label.outline_size = 5
 	dream_label.visible = false
 	world.add_child(dream_label)
+
+func build_sky(world: Node3D) -> void:
+	sun = add_sphere(world, Vector3(-1.65, 1.45, -0.42), 0.22, Color("#ffd85a"), true)
+	moon = add_sphere(world, Vector3(1.58, 1.42, -0.42), 0.16, Color("#d9e8ff"), true)
+	moon.visible = false
+	clouds = Node3D.new()
+	world.add_child(clouds)
+	for cloud_data in [[-0.75, 1.40, 0.34], [-0.42, 1.46, 0.24], [0.76, 1.28, 0.28]]:
+		add_sphere(clouds, Vector3(cloud_data[0], cloud_data[1], -0.35), cloud_data[2], Color(0.78, 0.88, 0.94, 0.68), false)
+	for index in range(20):
+		var x := -2.2 + fmod(float(index * 47), 44.0) / 10.0
+		var y := 0.92 + fmod(float(index * 31), 75.0) / 100.0
+		var star := add_sphere(world, Vector3(x, y, -0.48), 0.018 + float(index % 3) * 0.006, Color("#fff5bd"), true)
+		star.visible = false
+		stars.append(star)
+
+func add_sphere(parent: Node3D, position: Vector3, radius: float, color: Color, glow: bool) -> MeshInstance3D:
+	var part := MeshInstance3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = radius
+	mesh.height = radius * 2.0
+	part.mesh = mesh
+	part.position = position
+	var value := material(color)
+	if glow:
+		value.emission_enabled = true
+		value.emission = color
+		value.emission_energy_multiplier = 1.6
+	part.material_override = value
+	parent.add_child(part)
+	return part
 
 func add_box(parent: Node3D, position: Vector3, box_size: Vector3, color: Color) -> MeshInstance3D:
 	var part := MeshInstance3D.new()
@@ -301,6 +364,7 @@ func set_progress(value: float) -> void:
 		if cat_state not in ["fetching", "carrying"]:
 			set_state("fetching")
 	for index in range(house_stages.size()): house_stages[index].visible = index < built_stage
+	for part in house_finish_parts: part.visible = built_stage >= 4
 	if not is_instance_valid(rain) or not is_instance_valid(cat_root):
 		update_text()
 		return
@@ -311,11 +375,15 @@ func _process(delta: float) -> void:
 	if not is_instance_valid(cat_root): return
 	state_timer += delta
 	stalled_timer += delta
+	comedy_timer += delta
+	world_time = fmod(world_time + delta * 0.010, 1.0)
 	if lightning.light_energy > 0.0: lightning.light_energy = move_toward(lightning.light_energy, 0.0, delta * 14.0)
-	if cat_state in ["install_light", "sleep"]:
-		night_amount = move_toward(night_amount, 1.0, delta * 0.24)
-	else:
-		night_amount = move_toward(night_amount, 0.0, delta * 0.45)
+	var story_night := clampf((_progress - 72.0) / 24.0, 0.0, 1.0)
+	var time_night := clampf((absf(world_time - 0.5) - 0.27) * 6.0, 0.0, 1.0)
+	var target_night := maxf(story_night, time_night)
+	if cat_state in ["install_light", "sleep"]: target_night = 1.0
+	if storm_active: target_night = maxf(target_night, 0.72)
+	night_amount = move_toward(night_amount, target_night, delta * 0.32)
 	update_day_night()
 	if storm_active:
 		lightning_timer -= delta
@@ -323,8 +391,12 @@ func _process(delta: float) -> void:
 			lightning.light_energy = 7.5
 			lightning_timer = 3.2
 			set_state("scared")
-	elif state_timer > 4.2 and _progress < 100.0 and pending_stage <= built_stage and cat_state not in ["fetch_light", "carrying_light", "install_light", "sleep"]:
-		set_state("coffee" if stalled_timer > 8.0 else "fetching")
+	elif comedy_timer > 6.5 and _progress < 94.0 and pending_stage <= built_stage and cat_state in ["building", "fetching", "coffee", "inspect", "stretch"]:
+		comedy_timer = 0.0
+		comedy_index = (comedy_index + 1) % 3
+		set_state(["coffee", "inspect", "stretch"][comedy_index])
+	elif state_timer > 4.2 and _progress < 100.0 and pending_stage <= built_stage and cat_state not in ["fetch_light", "carrying_light", "install_light", "sleep", "coffee", "inspect", "stretch"]:
+		set_state("fetching")
 	match cat_state:
 		"fetching":
 			set_sled_loaded(false)
@@ -343,6 +415,7 @@ func _process(delta: float) -> void:
 				set_sled_loaded(false)
 				built_stage = mini(pending_stage, built_stage + 1)
 				for index in range(house_stages.size()): house_stages[index].visible = index < built_stage
+				for part in house_finish_parts: part.visible = built_stage >= 4
 				if is_instance_valid(smoke):
 					smoke.restart()
 					smoke.emitting = true
@@ -351,6 +424,17 @@ func _process(delta: float) -> void:
 			cat_is_moving = false
 			if state_timer > 1.4:
 				set_state("fetch_light" if _progress >= 90.0 and built_stage >= 4 else "fetching")
+		"coffee":
+			cat_root.position.x = move_toward(cat_root.position.x, HOUSE_X + 0.62, delta * 0.45)
+			if state_timer > 2.4: set_state("fetching")
+		"inspect":
+			cat_root.position.x = HOUSE_STOP_X
+			cat_root.rotation_degrees.z = sin(Time.get_ticks_msec() / 180.0) * 8.0
+			if state_timer > 2.0: set_state("fetching")
+		"stretch":
+			cat_root.position.x = HOUSE_X + 0.50
+			cat_root.scale.y = CAT_SCALE * (1.0 + sin(Time.get_ticks_msec() / 220.0) * 0.12)
+			if state_timer > 1.8: set_state("fetching")
 		"fetch_light":
 			cat_dir = 1.0
 			cat_root.position.x = move_toward(cat_root.position.x, SUPPLY_STOP_X, delta * 0.72)
@@ -377,14 +461,15 @@ func _process(delta: float) -> void:
 			cat_dir = -1.0
 			cat_root.position.x = move_toward(cat_root.position.x, HOUSE_X, delta * 1.8)
 			if cat_root.position.x <= HOUSE_X + 0.06: set_state("shelter")
-		"coffee": cat_root.position.x = move_toward(cat_root.position.x, HOUSE_X + 0.58, delta * 0.45)
 		"celebrate": cat_root.position.x = HOUSE_X + 0.45 + sin(Time.get_ticks_msec() / 150.0) * 0.12
 	# Reassert the two-dimensional lane after animation evaluation. Direction is
 	# represented by a mirror, never by rotating the model into camera depth.
 	cat_root.position.y = CAT_GROUND_Y
 	cat_root.position.z = CAT_PLANE_Z
-	cat_root.rotation_degrees = Vector3(0, CAT_SIDE_YAW, -14.0 if cat_state == "sleep" else 0.0)
-	cat_root.scale = Vector3(CAT_SCALE * (-1.0 if cat_dir < 0 else 1.0), CAT_SCALE, CAT_SCALE)
+	var pose_tilt := -14.0 if cat_state == "sleep" else (sin(Time.get_ticks_msec() / 180.0) * 8.0 if cat_state == "inspect" else 0.0)
+	var pose_height := CAT_SCALE * (1.0 + sin(Time.get_ticks_msec() / 220.0) * 0.12) if cat_state == "stretch" else CAT_SCALE
+	cat_root.rotation_degrees = Vector3(0, CAT_SIDE_YAW, pose_tilt)
+	cat_root.scale = Vector3(CAT_SCALE * (-1.0 if cat_dir < 0 else 1.0), pose_height, CAT_SCALE)
 	update_text()
 
 func set_sled_loaded(loaded: bool) -> void:
@@ -403,10 +488,22 @@ func update_sled_and_rope() -> void:
 
 func update_day_night() -> void:
 	if not is_instance_valid(scene_environment) or not is_instance_valid(day_light): return
-	scene_environment.background_color = Color("#07131f").lerp(Color("#020611"), night_amount)
+	var daylight := Color("#52a8cf").lerp(Color("#07132b"), night_amount)
+	scene_environment.background_color = daylight.lerp(Color("#101526"), 0.45 if storm_active else 0.0)
 	scene_environment.ambient_light_color = Color("#8ac6d1").lerp(Color("#365080"), night_amount)
 	day_light.light_color = Color("#bdefff").lerp(Color("#728bd1"), night_amount)
 	day_light.light_energy = lerpf(1.15, 0.18, night_amount)
+	if is_instance_valid(sun):
+		sun.visible = night_amount < 0.72 and not storm_active
+		sun.position.x = lerpf(-2.0, 1.8, world_time)
+		sun.position.y = 1.12 + sin(world_time * PI) * 0.55
+	if is_instance_valid(moon): moon.visible = night_amount > 0.48
+	for index in range(stars.size()):
+		stars[index].visible = night_amount > 0.42
+		stars[index].scale = Vector3.ONE * (0.75 + sin(Time.get_ticks_msec() / 320.0 + index) * 0.25)
+	if is_instance_valid(clouds):
+		clouds.position.x = fmod(Time.get_ticks_msec() / 18000.0, 5.2) - 2.6
+		clouds.visible = night_amount < 0.82 or storm_active
 
 func set_storm(enabled: bool) -> void:
 	if enabled == storm_active: return
@@ -459,6 +556,8 @@ func update_text() -> void:
 		"install_light": message = "Installing the warm light"
 		"sleep": message = "Night-night • dreaming of tuna"
 		"coffee": message = "Coffee and steam break"
+		"inspect": message = "Building inspector mode: very serious"
+		"stretch": message = "Mandatory tiny-cat stretch break"
 		"running": message = "Rain! Running for shelter"
 		"scared": message = "Thunder!"
 		"shelter": message = "Safe inside the glowing house"
