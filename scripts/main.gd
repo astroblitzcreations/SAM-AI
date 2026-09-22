@@ -200,6 +200,8 @@ var visible_history_start := 0
 var rendered_code_blocks: Array[String] = []
 var rendered_code_languages: Array[String] = []
 var rendered_code_paths: Array[String] = []
+var pending_tool_enable_code_id := -1
+var pending_tool_enable_action := ""
 var sse_buffer := PackedByteArray()
 var sent_messages: Array[String] = []
 var history_cursor := -1
@@ -7788,6 +7790,12 @@ func redraw_history() -> void:
 	for item_index in range(visible_history_start, history.size()):
 		var item: Dictionary = history[item_index]
 		append_chat(str(item.get("role", "assistant")), str(item.get("content", "")), str(item.get("image_path", "")), str(item.get("file_path", "")), item_index)
+	# Keep the newest generated app reachable even after another message, a tools
+	# permission change, or an application restart redraws the conversation.
+	if not rendered_code_blocks.is_empty():
+		var latest_code_id := rendered_code_blocks.size() - 1
+		chat_log.append_text("\n[bgcolor=#102437][color=#76f7a6][b]  LAST GENERATED APP  [/b][/color][/bgcolor]\n")
+		chat_log.append_text("[url=viewcode:%d][color=#4deeea]VIEW[/color][/url]  •  [url=savecode:%d][color=#76f7a6]SAVE[/color][/url]  •  [url=editcode:%d][color=#4deeea]EDIT[/color][/url]  •  [url=runcode:%d][color=#f9c74f][b]▶ RUN / TEST[/b][/color][/url]  •  [url=runadmincode:%d][color=#ff8095]🛡 RUN AS ADMIN[/color][/url]  •  [url=openwithcode:%d][color=#8292ad]OPEN FOLDER[/color][/url]\n" % [latest_code_id, latest_code_id, latest_code_id, latest_code_id, latest_code_id, latest_code_id])
 
 func append_formatted_code_message(content: String) -> void:
 	var cursor := 0
@@ -8821,7 +8829,10 @@ func request_local_visual_plan(original_prompt: String, job_path: String, prompt
 
 func request_run_rendered_code(code_id: int) -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
-		show_toast("PC commands are locked • enable Workspace Tools from the top lock")
+		pending_tool_enable_code_id = code_id
+		pending_tool_enable_action = "run"
+		show_toast("Enable Workspace Tools once • SAM will continue this Run/Test")
+		show_enable_pc_commands_confirmation.call_deferred()
 		return
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
 		return
@@ -8982,7 +8993,10 @@ func request_edit_rendered_code(code_id: int) -> void:
 
 func request_run_rendered_code_as_admin(code_id: int) -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
-		show_toast("PC commands are locked • enable Workspace Tools first")
+		pending_tool_enable_code_id = code_id
+		pending_tool_enable_action = "admin"
+		show_toast("Enable Workspace Tools once • SAM will continue the administrator run")
+		show_enable_pc_commands_confirmation.call_deferred()
 		return
 	if OS.get_name() != "Windows":
 		show_toast("Administrator launch is currently available only on Windows")
@@ -16211,8 +16225,20 @@ func show_enable_pc_commands_confirmation() -> void:
 		save_json(SETTINGS_FILE, settings)
 		refresh_pc_commands_indicator()
 		show_toast("Workspace tools enabled • commands still require confirmation")
+		var resume_code_id := pending_tool_enable_code_id
+		var resume_action := pending_tool_enable_action
+		pending_tool_enable_code_id = -1
+		pending_tool_enable_action = ""
+		dialog.queue_free()
+		if resume_code_id >= 0:
+			if resume_action == "admin":
+				request_run_rendered_code_as_admin.call_deferred(resume_code_id)
+			else:
+				request_run_rendered_code.call_deferred(resume_code_id))
+	dialog.canceled.connect(func():
+		pending_tool_enable_code_id = -1
+		pending_tool_enable_action = ""
 		dialog.queue_free())
-	dialog.canceled.connect(dialog.queue_free)
 	add_child(dialog)
 	apply_theme_recursive(dialog)
 	style_security_dialog(dialog, colors.cyan)
