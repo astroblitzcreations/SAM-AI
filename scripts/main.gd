@@ -180,6 +180,11 @@ var artifact_auto_fix_enabled := true
 var artifact_repair_target_path := ""
 var artifact_repair_language := ""
 var artifact_repair_prompt := ""
+var enhancement_idea_review_pending := false
+var enhancement_idea_code_id := -1
+var enhancement_idea_path := ""
+var build_idea_review_pending := false
+var build_idea_original_request := ""
 var artifact_validation_retry_count := 0
 var artifact_total_retry_count := 0
 var artifact_build_dialog: Window
@@ -3311,7 +3316,7 @@ func send_message() -> void:
 		show_model_switch_overlay()
 		start_engine()
 		return
-	if not studio_turn and not artifact_retry_in_progress and not artifact_build_confirmed_once and is_artifact_creation_request(user_text):
+	if not studio_turn and not build_idea_review_pending and not artifact_retry_in_progress and not artifact_build_confirmed_once and is_artifact_creation_request(user_text):
 		show_artifact_build_confirmation(user_text)
 		return
 	artifact_build_confirmed_once = false
@@ -3509,7 +3514,7 @@ func send_message() -> void:
 	# Live Voice keeps code generation on the normal streaming path so prose can
 	# begin with TTS and fenced source stays silent. The heavy Artifact Builder
 	# presentation path intentionally suppresses streaming and would make voice lag.
-	var artifact_builder_mode := false if command_center_turn or live_voice_turn or studio_turn else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text) or not artifact_repair_target_path.is_empty())
+	var artifact_builder_mode := false if command_center_turn or live_voice_turn or studio_turn or build_idea_review_pending else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text) or not artifact_repair_target_path.is_empty())
 	active_artifact_builder_mode = artifact_builder_mode
 	active_image_edit_action = artifact_builder_mode and not attached_image_path.is_empty() and is_executable_action_request(request_text)
 	if artifact_builder_mode:
@@ -5805,6 +5810,16 @@ func finish_generation() -> void:
 		return
 	var completed_artifact_turn := active_artifact_builder_mode
 	var completed_repair_path := artifact_repair_target_path
+	var completed_idea_review := enhancement_idea_review_pending
+	var completed_idea_code_id := enhancement_idea_code_id
+	var completed_idea_path := enhancement_idea_path
+	var completed_build_idea_review := build_idea_review_pending
+	var completed_build_idea_request := build_idea_original_request
+	enhancement_idea_review_pending = false
+	enhancement_idea_code_id = -1
+	enhancement_idea_path = ""
+	build_idea_review_pending = false
+	build_idea_original_request = ""
 	context_request_serial += 1
 	context_resume_serial = -1
 	request_preparing = false
@@ -6062,6 +6077,10 @@ func finish_generation() -> void:
 	synced_voice_failed = false
 	restore_primary_engine_if_needed()
 	complete_pending_session_switch()
+	if completed_idea_review and not completed_idea_path.is_empty() and FileAccess.file_exists(completed_idea_path):
+		show_artifact_enhancement_dialog.call_deferred(completed_idea_code_id, completed_idea_path, cleaned)
+	elif completed_build_idea_review and not completed_build_idea_request.is_empty():
+		show_artifact_build_confirmation.call_deferred(completed_build_idea_request, cleaned)
 
 func complete_pending_session_switch() -> void:
 	if pending_session_switch.is_empty():
@@ -7856,7 +7875,7 @@ func artifact_build_summary(request: String) -> String:
 		kind = "simulation"
 	return "SAM will build a complete %s in %s, save it inside the active Playground session, validate the source, and keep execution behind the supervised Run button." % [kind, language]
 
-func show_artifact_build_confirmation(request: String) -> void:
+func show_artifact_build_confirmation(request: String, initial_influence: String = "") -> void:
 	if is_instance_valid(artifact_build_dialog):
 		artifact_build_dialog.queue_free()
 	var dialog := ConfirmationDialog.new()
@@ -7901,6 +7920,7 @@ func show_artifact_build_confirmation(request: String) -> void:
 	box.add_child(influence_label)
 	var influence := TextEdit.new()
 	influence.placeholder_text = "Add design choices, constraints, or corrections before the build starts…"
+	influence.text = initial_influence.strip_edges()
 	influence.custom_minimum_size = Vector2(0, 75)
 	influence.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 	box.add_child(influence)
@@ -7912,9 +7932,13 @@ func show_artifact_build_confirmation(request: String) -> void:
 	var ask_button := Button.new()
 	ask_button.text = "✦ ASK SAM WHAT TO ADD"
 	ask_button.pressed.connect(func():
-		var language := detect_code_language(request)
-		influence.text = "Before returning the build, audit undefined names, imports, state transitions, event handling, scoring rules, restart behavior, and window sizing. Keep the implementation complete and runnable%s." % (" in " + language if not language.is_empty() else "")
-		suggestion.text = "SAM added a defensive implementation and validation pass. Edit it if you want, then start the build.")
+		build_idea_review_pending = true
+		build_idea_original_request = request
+		input_box.text = "Review the user's proposed build request below together with the relevant conversation in this active session. Use your actual local AI reasoning to suggest specific features, design choices, safeguards, and tests that fit this exact request. Do not return code yet, do not use a generic checklist, and do not repeat a canned message. Return one concise editable BUILD INFLUENCE that the user can approve.\n\nPROPOSED BUILD:\n" + request
+		dialog.queue_free()
+		set_status("SAM IS REVIEWING THE BUILD REQUEST", colors.cyan)
+		show_toast("SAM is reviewing the request and current session for tailored ideas")
+		call_deferred("send_message"))
 	box.add_child(ask_button)
 	dialog.confirmed.connect(func():
 		artifact_auto_fix_enabled = autofix.button_pressed
@@ -8565,7 +8589,7 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	apply_theme_recursive(dialog)
 	dialog.popup_centered_clamped(Vector2i(780, 540), 0.84)
 
-func show_artifact_enhancement_dialog(code_id: int, path: String) -> void:
+func show_artifact_enhancement_dialog(code_id: int, path: String, initial_request: String = "") -> void:
 	if not FileAccess.file_exists(path):
 		show_toast("The working source could not be found")
 		return
@@ -8606,10 +8630,21 @@ func show_artifact_enhancement_dialog(code_id: int, path: String) -> void:
 	box.add_child(status)
 	var request := TextEdit.new()
 	request.placeholder_text = "Tell SAM what to fix, change, add, remove, or improve in this app…"
+	request.text = initial_request.strip_edges()
 	request.custom_minimum_size = Vector2(0, 150)
 	request.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	request.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 	box.add_child(request)
+	var attachment_status := Label.new()
+	attachment_status.text = "Optional evidence: attach a file or paste/attach up to 6 screenshots. Screenshots use SAM Vision together with this prompt."
+	attachment_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	attachment_status.add_theme_color_override("font_color", colors.muted)
+	box.add_child(attachment_status)
+	request.gui_input.connect(func(event: InputEvent):
+		if event is InputEventKey and event.pressed and not event.echo and event.ctrl_pressed and event.keycode == KEY_V and DisplayServer.clipboard_has_image():
+			attach_clipboard_image()
+			attachment_status.text = "Attached %d screenshot%s from the clipboard • Vision will analyze %s with the edit request." % [attached_image_paths.size(), "" if attached_image_paths.size() == 1 else "s", "it" if attached_image_paths.size() == 1 else "them"]
+			get_viewport().set_input_as_handled())
 	var workflow := Label.new()
 	workflow.text = "Revision workflow: PLAN → MODIFY → VALIDATE → TEST. This is a staged local workflow, not uncontrolled self-copying."
 	workflow.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -8619,11 +8654,35 @@ func show_artifact_enhancement_dialog(code_id: int, path: String) -> void:
 	actions.add_theme_constant_override("h_separation", 8)
 	actions.add_theme_constant_override("v_separation", 6)
 	box.add_child(actions)
+	actions.add_child(make_button("＋ ATTACH FILE / IMAGE", func():
+		var picker := FileDialog.new()
+		picker.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+		picker.access = FileDialog.ACCESS_FILESYSTEM
+		picker.use_native_dialog = true
+		picker.file_selected.connect(func(selected_path: String):
+			if attach_file(selected_path):
+				attachment_status.text = "Attached: %s%s" % [selected_path.get_file(), " • Vision will analyze the screenshot" if selected_path.get_extension().to_lower() in ["png", "jpg", "jpeg", "webp", "gif", "bmp"] else " • SAM will read this reference with the source"]
+			picker.queue_free())
+		picker.canceled.connect(picker.queue_free)
+		add_child(picker)
+		picker.popup_centered_ratio(0.78)
+	, colors.cyan))
 	actions.add_child(make_button("✦ ASK SAM FOR IDEAS", func():
-		request.text = "Review the existing working game and add a focused improvement pack: persistent high scores and settings, clear controls/help, sound and visual feedback, pause/restart polish, accessibility options, and one well-integrated new gameplay feature. Preserve the current rules and controls. Do not add placeholders."
-		request.grab_focus()
-		request.set_caret_line(request.get_line_count() - 1)
-		status.text = "SAM suggested a practical improvement pack. Edit the request below, then create the revision."
+		var supplemental := attached_file_text
+		var idea_prompt := "Review the attached current working app source and the relevant conversation in this active session, including the user's original build request and later feedback. Analyze what the app already implements and what it is still missing. Propose a specific prioritized set of fixes and additions that fit this exact app. Do not use a generic checklist, do not repeat a canned improvement pack, and do not output code yet. Return a concise editable revision prompt that I can approve."
+		if not request.text.strip_edges().is_empty():
+			idea_prompt += "\n\nThe user is currently considering these changes:\n" + request.text.strip_edges()
+		if not supplemental.is_empty() and attached_file_path != path:
+			idea_prompt += "\n\nAdditional attached reference:\n" + supplemental.left(5000)
+		enhancement_idea_review_pending = true
+		enhancement_idea_code_id = code_id
+		enhancement_idea_path = path
+		attach_file(path)
+		input_box.text = idea_prompt
+		dialog.queue_free()
+		set_status("SAM IS REVIEWING THIS APP FOR IDEAS", colors.cyan)
+		show_toast("SAM is reviewing the source, session, prompt, and attached evidence")
+		call_deferred("send_message")
 	, colors.cyan))
 	actions.add_child(make_button("CREATE REVISION + BUILD", func():
 		var addition := request.text.strip_edges()
