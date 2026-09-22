@@ -20,15 +20,26 @@ var rain: GPUParticles3D
 var steam: GPUParticles3D
 var lightning: OmniLight3D
 var cargo: MeshInstance3D
+var sled: Node3D
+var sled_blocks: Node3D
+var rope: MeshInstance3D
+var light_item: MeshInstance3D
+var house_light: OmniLight3D
+var dream_label: Label3D
+var scene_environment: Environment
+var day_light: DirectionalLight3D
+var night_amount := 0.0
 var progress_label: Label
 var state_label: Label
 var text_column: VBoxContainer
 var builder_viewport: SubViewport
 
-const CAT_SCALE := 2.65
+const CAT_SCALE := 1.35
 const CAT_GROUND_Y := 0.08
 const CAT_PLANE_Z := 0.15
-const CAT_SIDE_YAW := 90.0
+# The supplied mesh's profile axis is its native orientation. A 90-degree yaw
+# shows its chest/head-on, which caused the front-facing screenshots.
+const CAT_SIDE_YAW := 0.0
 
 func _ready() -> void:
 	custom_minimum_size = Vector2(360, 68)
@@ -60,27 +71,27 @@ func build_scene() -> void:
 	var world := Node3D.new()
 	builder_viewport.add_child(world)
 	var environment := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color("#07131f")
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color("#8ac6d1")
-	env.ambient_light_energy = 0.72
-	environment.environment = env
+	scene_environment = Environment.new()
+	scene_environment.background_mode = Environment.BG_COLOR
+	scene_environment.background_color = Color("#07131f")
+	scene_environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	scene_environment.ambient_light_color = Color("#8ac6d1")
+	scene_environment.ambient_light_energy = 0.72
+	environment.environment = scene_environment
 	world.add_child(environment)
 	var camera := Camera3D.new()
 	# A straight-on orthographic camera makes this a true side-scroller. There
 	# is no perspective axis for the cat to appear to run into.
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.size = 1.72
+	camera.size = 2.15
 	camera.position = Vector3(0.0, 0.55, 5.0)
 	camera.look_at_from_position(camera.position, Vector3(0.0, 0.55, 0.0), Vector3.UP)
 	world.add_child(camera)
-	var key := DirectionalLight3D.new()
-	key.rotation_degrees = Vector3(-35, -25, 0)
-	key.light_color = Color("#bdefff")
-	key.light_energy = 1.15
-	world.add_child(key)
+	day_light = DirectionalLight3D.new()
+	day_light.rotation_degrees = Vector3(-35, -25, 0)
+	day_light.light_color = Color("#bdefff")
+	day_light.light_energy = 1.15
+	world.add_child(day_light)
 	lightning = OmniLight3D.new()
 	lightning.position = Vector3(0, 2.2, 1.4)
 	lightning.light_color = Color("#d9eeff")
@@ -132,10 +143,46 @@ func build_ground_and_house(world: Node3D) -> void:
 	door_mat.emission_enabled = true
 	door_mat.emission = Color("#ffb84d")
 	door_mat.emission_energy_multiplier = 1.6
-	# Supply depot on the right. The cat visibly carries this block to the house.
+	house_light = OmniLight3D.new()
+	house_light.position = Vector3(-1.18, 0.45, 0.58)
+	house_light.light_color = Color("#ffd477")
+	house_light.light_energy = 0.0
+	house_light.omni_range = 2.2
+	world.add_child(house_light)
+	# Supply depot, sled, load, rope, and final lamp are all separate so the
+	# delivery story remains readable even in the smallest monitor.
 	add_box(world, Vector3(1.15, 0.10, 0), Vector3(0.34, 0.20, 0.34), Color("#c69755"))
-	cargo = add_box(world, Vector3(1.15, 0.24, 0.18), Vector3(0.15, 0.12, 0.15), Color("#ffd06a"))
-	cargo.visible = false
+	sled = Node3D.new()
+	world.add_child(sled)
+	add_box(sled, Vector3.ZERO, Vector3(0.48, 0.055, 0.28), Color("#a85e35"))
+	add_box(sled, Vector3(-0.16, -0.055, 0.0), Vector3(0.08, 0.08, 0.34), Color("#283640"))
+	add_box(sled, Vector3(0.16, -0.055, 0.0), Vector3(0.08, 0.08, 0.34), Color("#283640"))
+	sled.position = Vector3(1.12, 0.10, CAT_PLANE_Z)
+	sled_blocks = Node3D.new()
+	sled.add_child(sled_blocks)
+	for block_data in [[-0.14, Color("#efb65b")], [0.0, Color("#75d5df")], [0.14, Color("#e9776f")]]:
+		add_box(sled_blocks, Vector3(block_data[0], 0.12, 0), Vector3(0.13, 0.15, 0.16), block_data[1])
+	sled_blocks.visible = false
+	rope = add_box(world, Vector3(0, 0.17, CAT_PLANE_Z), Vector3(1.0, 0.018, 0.018), Color("#e8d5a7"))
+	rope.visible = false
+	light_item = add_box(world, Vector3(1.15, 0.28, 0.18), Vector3(0.10, 0.16, 0.10), Color("#fff27a"))
+	var light_mat := light_item.material_override as StandardMaterial3D
+	light_mat.emission_enabled = true
+	light_mat.emission = Color("#fff27a")
+	light_mat.emission_energy_multiplier = 2.2
+	light_item.visible = false
+	# A tiny coffee spot remains near the finished house; its steam is driven by
+	# the existing particle system during rests and the final sleep scene.
+	add_box(world, Vector3(-0.58, 0.095, 0.22), Vector3(0.10, 0.15, 0.10), Color("#63c7d4"))
+	dream_label = Label3D.new()
+	dream_label.text = "Z  z  z\nDreaming of tuna…"
+	dream_label.position = Vector3(-0.72, 1.12, 0.35)
+	dream_label.font_size = 28
+	dream_label.modulate = Color("#d9f5ff")
+	dream_label.outline_modulate = Color("#07131f")
+	dream_label.outline_size = 5
+	dream_label.visible = false
+	world.add_child(dream_label)
 
 func add_box(parent: Node3D, position: Vector3, box_size: Vector3, color: Color) -> MeshInstance3D:
 	var part := MeshInstance3D.new()
@@ -163,7 +210,7 @@ func build_particles(world: Node3D) -> void:
 	rain.position = Vector3(0, 1.55, 0.25)
 	world.add_child(rain)
 	steam = make_particles(Color(0.82, 0.88, 0.90, 0.38), 10, 1.2, 0.025)
-	steam.position = Vector3(-0.15, 0.48, 0.20)
+	steam.position = Vector3(-0.58, 0.30, 0.24)
 	world.add_child(steam)
 	smoke.emitting = false
 	rain.emitting = false
@@ -232,7 +279,6 @@ func set_progress(value: float) -> void:
 		update_text()
 		return
 	set_storm(_progress >= 66.0 and _progress < 78.0)
-	if _progress >= 100.0: set_state("celebrate")
 	update_text()
 
 func _process(delta: float) -> void:
@@ -240,29 +286,35 @@ func _process(delta: float) -> void:
 	state_timer += delta
 	stalled_timer += delta
 	if lightning.light_energy > 0.0: lightning.light_energy = move_toward(lightning.light_energy, 0.0, delta * 14.0)
+	if cat_state in ["install_light", "sleep"]:
+		night_amount = move_toward(night_amount, 1.0, delta * 0.24)
+	else:
+		night_amount = move_toward(night_amount, 0.0, delta * 0.45)
+	update_day_night()
 	if storm_active:
 		lightning_timer -= delta
 		if lightning_timer <= 0.0:
 			lightning.light_energy = 7.5
 			lightning_timer = 3.2
 			set_state("scared")
-	elif state_timer > 4.2 and _progress < 100.0 and pending_stage <= built_stage:
+	elif state_timer > 4.2 and _progress < 100.0 and pending_stage <= built_stage and cat_state not in ["fetch_light", "carrying_light", "install_light", "sleep"]:
 		set_state("coffee" if stalled_timer > 8.0 else "fetching")
 	match cat_state:
 		"fetching":
+			set_sled_loaded(false)
 			cat_is_moving = true
 			cat_dir = 1.0
 			cat_root.position.x = move_toward(cat_root.position.x, 1.02, delta * 0.78)
 			if cat_root.position.x >= 0.99:
-				cargo.visible = true
+				set_sled_loaded(true)
 				set_state("carrying")
 		"carrying":
 			cat_is_moving = true
 			cat_dir = -1.0
 			cat_root.position.x = move_toward(cat_root.position.x, -0.83, delta * 0.62)
-			cargo.position = cat_root.position + Vector3(-0.02, 0.28, 0.03)
+			update_sled_and_rope()
 			if cat_root.position.x <= -0.80:
-				cargo.visible = false
+				set_sled_loaded(false)
 				built_stage = mini(pending_stage, built_stage + 1)
 				for index in range(house_stages.size()): house_stages[index].visible = index < built_stage
 				if is_instance_valid(smoke):
@@ -272,7 +324,29 @@ func _process(delta: float) -> void:
 		"building":
 			cat_is_moving = false
 			if state_timer > 1.4:
-				set_state("fetching")
+				set_state("fetch_light" if _progress >= 90.0 and built_stage >= 4 else "fetching")
+		"fetch_light":
+			cat_dir = 1.0
+			cat_root.position.x = move_toward(cat_root.position.x, 1.03, delta * 0.72)
+			if cat_root.position.x >= 1.0:
+				light_item.visible = true
+				set_state("carrying_light")
+		"carrying_light":
+			cat_dir = -1.0
+			cat_root.position.x = move_toward(cat_root.position.x, -0.86, delta * 0.58)
+			light_item.position = cat_root.position + Vector3(-0.02, 0.34, 0.05)
+			if cat_root.position.x <= -0.83:
+				light_item.visible = false
+				set_state("install_light")
+		"install_light":
+			if state_timer > 1.7:
+				house_light.light_energy = 2.4
+				set_state("sleep")
+		"sleep":
+			cat_root.position.x = -0.72
+			steam.emitting = true
+			dream_label.visible = true
+			dream_label.modulate.a = 0.55 + sin(Time.get_ticks_msec() / 600.0) * 0.35
 		"running", "scared":
 			cat_dir = -1.0
 			cat_root.position.x = move_toward(cat_root.position.x, -1.18, delta * 1.8)
@@ -283,9 +357,30 @@ func _process(delta: float) -> void:
 	# represented by a mirror, never by rotating the model into camera depth.
 	cat_root.position.y = CAT_GROUND_Y
 	cat_root.position.z = CAT_PLANE_Z
-	cat_root.rotation_degrees = Vector3(0, CAT_SIDE_YAW, 0)
+	cat_root.rotation_degrees = Vector3(0, CAT_SIDE_YAW, -14.0 if cat_state == "sleep" else 0.0)
 	cat_root.scale = Vector3(CAT_SCALE * (-1.0 if cat_dir < 0 else 1.0), CAT_SCALE, CAT_SCALE)
 	update_text()
+
+func set_sled_loaded(loaded: bool) -> void:
+	if is_instance_valid(sled_blocks): sled_blocks.visible = loaded
+	if is_instance_valid(sled): sled.visible = loaded or cat_state == "fetching"
+	if is_instance_valid(rope): rope.visible = loaded
+	if not loaded and is_instance_valid(sled): sled.position = Vector3(1.12, 0.10, CAT_PLANE_Z)
+
+func update_sled_and_rope() -> void:
+	if not is_instance_valid(sled) or not is_instance_valid(rope): return
+	sled.position = Vector3(cat_root.position.x + 0.43, 0.10, CAT_PLANE_Z)
+	var rope_start := cat_root.position.x + 0.15
+	var rope_end := sled.position.x - 0.24
+	rope.position = Vector3((rope_start + rope_end) * 0.5, 0.18, CAT_PLANE_Z)
+	rope.scale = Vector3(maxf(0.05, absf(rope_end - rope_start)), 1.0, 1.0)
+
+func update_day_night() -> void:
+	if not is_instance_valid(scene_environment) or not is_instance_valid(day_light): return
+	scene_environment.background_color = Color("#07131f").lerp(Color("#020611"), night_amount)
+	scene_environment.ambient_light_color = Color("#8ac6d1").lerp(Color("#365080"), night_amount)
+	day_light.light_color = Color("#bdefff").lerp(Color("#728bd1"), night_amount)
+	day_light.light_energy = lerpf(1.15, 0.18, night_amount)
 
 func set_storm(enabled: bool) -> void:
 	if enabled == storm_active: return
@@ -300,9 +395,10 @@ func set_storm(enabled: bool) -> void:
 func set_state(next: String) -> void:
 	cat_state = next
 	state_timer = 0.0
-	steam.emitting = next == "coffee"
+	steam.emitting = next in ["coffee", "sleep"]
+	if is_instance_valid(dream_label): dream_label.visible = next == "sleep"
 	cat_root.visible = next != "shelter"
-	if next in ["fetching", "carrying", "running", "scared", "building", "celebrate"]: play_run(2.0 if next in ["running", "scared"] else (1.15 if next in ["fetching", "carrying"] else 0.55))
+	if next in ["fetching", "carrying", "fetch_light", "carrying_light", "running", "scared", "building", "celebrate"]: play_run(2.0 if next in ["running", "scared"] else (1.15 if next in ["fetching", "carrying", "fetch_light", "carrying_light"] else 0.55))
 	elif is_instance_valid(animation_player): animation_player.pause()
 
 func find_animation_player(root: Node) -> AnimationPlayer:
@@ -328,6 +424,10 @@ func update_text() -> void:
 		"fetching": message = "Running right for supplies"
 		"carrying": message = "Carrying materials left"
 		"building": message = "Building the next house stage"
+		"fetch_light": message = "Fetching the house light"
+		"carrying_light": message = "Bringing the light home"
+		"install_light": message = "Installing the warm light"
+		"sleep": message = "Night-night • dreaming of tuna"
 		"coffee": message = "Coffee and steam break"
 		"running": message = "Rain! Running for shelter"
 		"scared": message = "Thunder!"
