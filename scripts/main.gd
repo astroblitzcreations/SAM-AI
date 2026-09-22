@@ -7795,7 +7795,7 @@ func redraw_history() -> void:
 	if not rendered_code_blocks.is_empty():
 		var latest_code_id := rendered_code_blocks.size() - 1
 		chat_log.append_text("\n[bgcolor=#102437][color=#76f7a6][b]  LAST GENERATED APP  [/b][/color][/bgcolor]\n")
-		chat_log.append_text("[url=viewcode:%d][color=#4deeea]VIEW[/color][/url]  •  [url=savecode:%d][color=#76f7a6]SAVE[/color][/url]  •  [url=editcode:%d][color=#4deeea]EDIT[/color][/url]  •  [url=runcode:%d][color=#f9c74f][b]▶ RUN / TEST[/b][/color][/url]  •  [url=runadmincode:%d][color=#ff8095]🛡 RUN AS ADMIN[/color][/url]  •  [url=openwithcode:%d][color=#8292ad]OPEN FOLDER[/color][/url]\n" % [latest_code_id, latest_code_id, latest_code_id, latest_code_id, latest_code_id, latest_code_id])
+		chat_log.append_text("[url=viewcode:%d][color=#4deeea]VIEW[/color][/url]  •  [url=savecode:%d][color=#76f7a6]SAVE[/color][/url]  •  [url=editcode:%d][color=#4deeea]EDIT CODE[/color][/url]  •  [url=editpromptcode:%d][color=#76f7a6][b]✦ EDIT PROMPT[/b][/color][/url]  •  [url=runcode:%d][color=#f9c74f][b]▶ RUN / TEST[/b][/color][/url]  •  [url=runadmincode:%d][color=#ff8095]🛡 RUN AS ADMIN[/color][/url]  •  [url=openwithcode:%d][color=#8292ad]OPEN FOLDER[/color][/url]\n" % [latest_code_id, latest_code_id, latest_code_id, latest_code_id, latest_code_id, latest_code_id, latest_code_id])
 
 func append_formatted_code_message(content: String) -> void:
 	var cursor := 0
@@ -8203,6 +8203,9 @@ func _on_chat_meta_clicked(meta: Variant) -> void:
 	if value.begins_with("editcode:"):
 		request_edit_rendered_code(int(value.trim_prefix("editcode:")))
 		return
+	if value.begins_with("editpromptcode:"):
+		request_edit_prompt_for_rendered_code(int(value.trim_prefix("editpromptcode:")))
+		return
 	if value.begins_with("runadmincode:"):
 		request_run_rendered_code_as_admin(int(value.trim_prefix("runadmincode:")))
 		return
@@ -8593,7 +8596,7 @@ func show_artifact_enhancement_dialog(code_id: int, path: String) -> void:
 	box.add_theme_constant_override("separation", 10)
 	margin.add_child(box)
 	var heading := Label.new()
-	heading.text = "ADD FEATURES WITHOUT LOSING THE WORKING VERSION"
+	heading.text = "EDIT THIS APP WITHOUT LOSING THE WORKING VERSION"
 	heading.add_theme_color_override("font_color", colors.amber)
 	heading.add_theme_font_size_override("font_size", 20)
 	box.add_child(heading)
@@ -8602,7 +8605,7 @@ func show_artifact_enhancement_dialog(code_id: int, path: String) -> void:
 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(status)
 	var request := TextEdit.new()
-	request.placeholder_text = "Tell SAM what to add: new gameplay, menus, AI opponents, sound, polish, accessibility, levels, controls…"
+	request.placeholder_text = "Tell SAM what to fix, change, add, remove, or improve in this app…"
 	request.custom_minimum_size = Vector2(0, 150)
 	request.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	request.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
@@ -8633,7 +8636,7 @@ func show_artifact_enhancement_dialog(code_id: int, path: String) -> void:
 			return
 		artifact_repair_target_path = path
 		artifact_repair_language = path.get_extension()
-		artifact_repair_prompt = "Enhance the attached WORKING source in place. Preserve every existing working feature and control. Make only coherent changes needed for the requested additions. Fix any directly related defects you find. Return exactly one complete corrected file in one fenced code block, with no tutorial, placeholders, omitted sections, or split files. Before answering, perform three internal passes: plan the smallest safe change, implement it, then check state transitions and runtime edge cases. Requested additions:\n\n%s" % addition
+		artifact_repair_prompt = "Edit the attached WORKING source in place. Preserve every existing working feature and control unless the user explicitly asks to change or remove it. Apply all requested fixes, edits, additions, removals, or improvements as one coherent revision. Fix directly related defects you find. Return exactly one complete corrected file in one fenced code block, with no tutorial, placeholders, omitted sections, or split files. Before answering, perform three internal passes: plan the smallest safe change, implement it, then check state transitions and runtime edge cases. Requested changes:\n\n%s" % addition
 		artifact_total_retry_count = 0
 		artifact_validation_retry_count = 0
 		artifact_auto_retry_count = 0
@@ -8990,6 +8993,19 @@ func request_edit_rendered_code(code_id: int) -> void:
 		show_toast("Could not prepare that file")
 		return
 	OS.shell_open(path)
+
+func request_edit_prompt_for_rendered_code(code_id: int) -> void:
+	if code_id < 0 or code_id >= rendered_code_blocks.size():
+		show_toast("The generated app is no longer available in this chat")
+		return
+	# Recreate the saved working file when this action is used after a restart.
+	# The enhancement workflow then attaches that exact source to SAM, checkpoints
+	# it, replaces it only after validation, and returns it to Run/Test.
+	var path := prepare_rendered_code_in_workspace(code_id)
+	if path.is_empty():
+		show_toast("Could not prepare the generated app for editing")
+		return
+	show_artifact_enhancement_dialog(code_id, path)
 
 func request_run_rendered_code_as_admin(code_id: int) -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
