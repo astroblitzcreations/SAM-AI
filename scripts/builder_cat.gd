@@ -23,6 +23,12 @@ var cargo: MeshInstance3D
 var progress_label: Label
 var state_label: Label
 var text_column: VBoxContainer
+var builder_viewport: SubViewport
+
+const CAT_SCALE := 2.65
+const CAT_GROUND_Y := 0.08
+const CAT_PLANE_Z := 0.15
+const CAT_SIDE_YAW := 90.0
 
 func _ready() -> void:
 	custom_minimum_size = Vector2(360, 68)
@@ -40,19 +46,19 @@ func build_scene() -> void:
 	text_column.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	layout.add_child(text_column)
 	build_labels()
-	var container := SubViewportContainer.new()
-	container.stretch = true
-	container.custom_minimum_size = Vector2(220, 68)
-	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	container.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layout.add_child(container)
-	var viewport := SubViewport.new()
-	viewport.size = Vector2i(720, 136)
-	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	container.add_child(viewport)
+	var builder_viewport_container := SubViewportContainer.new()
+	builder_viewport_container.stretch = true
+	builder_viewport_container.custom_minimum_size = Vector2(220, 68)
+	builder_viewport_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	builder_viewport_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	builder_viewport_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layout.add_child(builder_viewport_container)
+	builder_viewport = SubViewport.new()
+	builder_viewport.size = Vector2i(440, 136)
+	builder_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	builder_viewport_container.add_child(builder_viewport)
 	var world := Node3D.new()
-	viewport.add_child(world)
+	builder_viewport.add_child(world)
 	var environment := WorldEnvironment.new()
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
@@ -63,9 +69,12 @@ func build_scene() -> void:
 	environment.environment = env
 	world.add_child(environment)
 	var camera := Camera3D.new()
-	camera.position = Vector3(0.30, 0.92, 3.15)
-	camera.look_at_from_position(camera.position, Vector3(0.30, 0.35, 0.0))
-	camera.fov = 31.0
+	# A straight-on orthographic camera makes this a true side-scroller. There
+	# is no perspective axis for the cat to appear to run into.
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	camera.size = 1.72
+	camera.position = Vector3(0.0, 0.55, 5.0)
+	camera.look_at_from_position(camera.position, Vector3(0.0, 0.55, 0.0), Vector3.UP)
 	world.add_child(camera)
 	var key := DirectionalLight3D.new()
 	key.rotation_degrees = Vector3(-35, -25, 0)
@@ -84,12 +93,26 @@ func build_scene() -> void:
 		push_warning("Builder cat model could not be loaded; compact monitor will continue without the 3D cat.")
 		return
 	cat_root = cat_scene.instantiate() as Node3D
-	cat_root.position = Vector3(-0.80, 0.08, 0.15)
-	cat_root.scale = Vector3.ONE * 2.15
-	cat_root.rotation_degrees = Vector3(0, 90, 0)
+	cat_root.position = Vector3(-0.80, CAT_GROUND_Y, CAT_PLANE_Z)
+	cat_root.scale = Vector3.ONE * CAT_SCALE
+	cat_root.rotation_degrees = Vector3(0, CAT_SIDE_YAW, 0)
 	world.add_child(cat_root)
 	animation_player = find_animation_player(cat_root)
+	disable_animation_root_motion()
 	play_run(0.65)
+
+func disable_animation_root_motion() -> void:
+	if not is_instance_valid(animation_player):
+		return
+	for animation_name in animation_player.get_animation_list():
+		var animation := animation_player.get_animation(animation_name)
+		if animation == null:
+			continue
+		for track_index in range(animation.get_track_count()):
+			# The imported Blender action contains a position track named
+			# "reference". It is root motion and must not steer the display rig.
+			if str(animation.track_get_path(track_index)) == "reference":
+				animation.track_set_enabled(track_index, false)
 
 func build_ground_and_house(world: Node3D) -> void:
 	add_box(world, Vector3(0, -0.02, 0), Vector3(4.8, 0.07, 1.15), Color("#18323b"))
@@ -187,6 +210,14 @@ func build_labels() -> void:
 	text_column.add_child(state_label)
 	update_text()
 
+func set_display_size_level(level: int) -> void:
+	if not is_instance_valid(progress_label) or not is_instance_valid(state_label) or not is_instance_valid(text_column):
+		return
+	var safe_level := clampi(level, 0, 2)
+	text_column.custom_minimum_size.x = [132.0, 184.0, 240.0][safe_level]
+	progress_label.add_theme_font_size_override("font_size", [12, 18, 24][safe_level])
+	state_label.add_theme_font_size_override("font_size", [10, 15, 20][safe_level])
+
 func set_progress(value: float) -> void:
 	var next := clampf(value, 0.0, 100.0)
 	if not is_equal_approx(next, _progress): stalled_timer = 0.0
@@ -248,7 +279,12 @@ func _process(delta: float) -> void:
 			if cat_root.position.x <= -1.12: set_state("shelter")
 		"coffee": cat_root.position.x = move_toward(cat_root.position.x, -0.12, delta * 0.45)
 		"celebrate": cat_root.position.x = -0.72 + sin(Time.get_ticks_msec() / 150.0) * 0.12
-	cat_root.rotation_degrees = Vector3(0, -90 if cat_dir < 0 else 90, 0)
+	# Reassert the two-dimensional lane after animation evaluation. Direction is
+	# represented by a mirror, never by rotating the model into camera depth.
+	cat_root.position.y = CAT_GROUND_Y
+	cat_root.position.z = CAT_PLANE_Z
+	cat_root.rotation_degrees = Vector3(0, CAT_SIDE_YAW, 0)
+	cat_root.scale = Vector3(CAT_SCALE * (-1.0 if cat_dir < 0 else 1.0), CAT_SCALE, CAT_SCALE)
 	update_text()
 
 func set_storm(enabled: bool) -> void:

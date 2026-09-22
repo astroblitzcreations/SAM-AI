@@ -190,7 +190,7 @@ var artifact_monitor_compact: PanelContainer
 var artifact_monitor_compact_progress: ProgressBar
 var artifact_monitor_compact_label: Label
 var artifact_monitor_cat: Control
-var artifact_monitor_compact_large := false
+var artifact_monitor_compact_size_index := 0
 var active_image_edit_action := false
 var stream_retry_count := 0
 var stream_retry_not_before_ms := 0
@@ -8000,10 +8000,10 @@ func show_artifact_compact_monitor() -> void:
 	row.add_child(artifact_monitor_compact_progress)
 	var resize := Button.new()
 	resize.text = "SIZE +"
-	resize.tooltip_text = "Toggle a larger 3D builder view"
+	resize.tooltip_text = "Cycle the complete builder card through normal, large, and extra-large sizes"
 	resize.pressed.connect(func():
-		artifact_monitor_compact_large = not artifact_monitor_compact_large
-		resize.text = "SIZE −" if artifact_monitor_compact_large else "SIZE +"
+		artifact_monitor_compact_size_index = (artifact_monitor_compact_size_index + 1) % 3
+		resize.text = ["SIZE +", "SIZE ++", "SIZE − RESET"][artifact_monitor_compact_size_index]
 		resize_artifact_compact_monitor())
 	row.add_child(resize)
 	var restore := Button.new()
@@ -8011,6 +8011,7 @@ func show_artifact_compact_monitor() -> void:
 	restore.pressed.connect(show_artifact_build_monitor)
 	row.add_child(restore)
 	artifact_monitor_cat = BUILDER_CAT_SCRIPT.new() as Control
+	artifact_monitor_cat.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	compact_stack.add_child(artifact_monitor_cat)
 	add_child(card)
 	apply_theme_recursive(card)
@@ -8019,7 +8020,8 @@ func show_artifact_compact_monitor() -> void:
 func resize_artifact_compact_monitor() -> void:
 	if not is_instance_valid(artifact_monitor_compact):
 		return
-	var target_size := Vector2(650, 190) if artifact_monitor_compact_large else Vector2(420, 112)
+	var sizes := [Vector2(420, 112), Vector2(720, 260), Vector2(1000, 390)]
+	var target_size: Vector2 = sizes[clampi(artifact_monitor_compact_size_index, 0, sizes.size() - 1)]
 	# Pin the card with explicit right/top offsets. Using Control.position with
 	# right-side anchors can turn a negative offset into a negative absolute
 	# position, which made the minimized monitor disappear on wide windows.
@@ -8028,6 +8030,8 @@ func resize_artifact_compact_monitor() -> void:
 	artifact_monitor_compact.offset_right = -18.0
 	artifact_monitor_compact.offset_top = 74.0
 	artifact_monitor_compact.offset_bottom = 74.0 + target_size.y
+	if is_instance_valid(artifact_monitor_cat):
+		artifact_monitor_cat.call("set_display_size_level", artifact_monitor_compact_size_index)
 	artifact_monitor_compact.move_to_front()
 
 func hide_artifact_compact_monitor() -> void:
@@ -8080,7 +8084,7 @@ func close_artifact_build_monitor() -> void:
 	artifact_monitor_compact_progress = null
 	artifact_monitor_compact_label = null
 	artifact_monitor_cat = null
-	artifact_monitor_compact_large = false
+	artifact_monitor_compact_size_index = 0
 
 func is_visual_creation_request(value: String) -> bool:
 	var lower := value.to_lower()
