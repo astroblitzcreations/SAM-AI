@@ -9371,6 +9371,8 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_none_piece_repair(path, detail):
 		return
+	if language.to_lower() in ["python", "py"] and try_deterministic_python_unbound_local_repair(path, detail):
+		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_call_repair(path, detail):
 		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_repair(path, detail):
@@ -9378,7 +9380,7 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	# Give an unsupported runtime failure one model-assisted repair attempt. The
 	# validated staged replacement path creates a revision backup first. If that
 	# same source fails again, stop and open review instead of looping forever.
-	var unsupported_python_runtime := language.to_lower() in ["python", "py"] and (detail.contains("Traceback (most recent call last)") or detail.contains("TypeError:") or detail.contains("NameError:") or detail.contains("AttributeError:") or detail.contains("IndexError:"))
+	var unsupported_python_runtime := language.to_lower() in ["python", "py"] and (detail.contains("Traceback (most recent call last)") or detail.contains("TypeError:") or detail.contains("NameError:") or detail.contains("UnboundLocalError:") or detail.contains("AttributeError:") or detail.contains("IndexError:"))
 	if unsupported_python_runtime and artifact_total_retry_count >= 1:
 		artifact_repair_target_path = path
 		artifact_repair_language = language
@@ -9404,6 +9406,78 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	set_artifact_monitor_phase("AUTO-FIX • TOTAL ATTEMPT %d OF 3" % artifact_total_retry_count, detail.left(500), 0)
 	show_toast("Auto-fix caught an error • total attempt %d of 3" % artifact_total_retry_count)
 	call_deferred("send_message")
+
+func try_deterministic_python_unbound_local_repair(path: String, detail: String) -> bool:
+	var marker := "UnboundLocalError: cannot access local variable '"
+	var marker_at := detail.rfind(marker)
+	if marker_at < 0:
+		return false
+	var name_start := marker_at + marker.length()
+	var name_end := detail.find("'", name_start)
+	if name_end <= name_start:
+		return false
+	var variable_name := detail.substr(name_start, name_end - name_start)
+	if not variable_name.is_valid_identifier():
+		return false
+	var traceback_before := detail.left(marker_at)
+	var function_name := ""
+	for traceback_line in traceback_before.split("\n"):
+		var in_at := str(traceback_line).find(", in ")
+		if in_at >= 0:
+			function_name = str(traceback_line).substr(in_at + 5).strip_edges()
+	if function_name.is_empty() or not function_name.is_valid_identifier():
+		return false
+	var repair_key := path + "::unbound-local::" + function_name + "::" + variable_name
+	if bool(automatic_name_repairs.get(repair_key, false)):
+		return false
+	var source := FileAccess.get_file_as_string(path)
+	if source.is_empty():
+		return false
+	var lines := source.split("\n")
+	var function_start := -1
+	var function_end := lines.size()
+	var assignment_index := -1
+	for index in range(lines.size()):
+		var trimmed := str(lines[index]).strip_edges()
+		if function_start < 0 and trimmed.begins_with("def %s(" % function_name):
+			function_start = index
+			continue
+		if function_start >= 0 and index > function_start and (trimmed.begins_with("def ") or trimmed.begins_with("class ")):
+			function_end = index
+			break
+	if function_start < 0:
+		return false
+	for index in range(function_start + 1, function_end):
+		var trimmed := str(lines[index]).strip_edges()
+		if trimmed.begins_with(variable_name + " = ") and trimmed.substr(variable_name.length() + 3).contains(variable_name):
+			assignment_index = index
+			break
+	if assignment_index < 0:
+		return false
+	var replacement_name := variable_name + "_text"
+	var assignment_line := str(lines[assignment_index])
+	var assignment_name_at := assignment_line.find(variable_name)
+	lines[assignment_index] = assignment_line.left(assignment_name_at) + replacement_name + assignment_line.substr(assignment_name_at + variable_name.length())
+	var word := RegEx.new()
+	word.compile("\\b%s\\b" % variable_name)
+	for index in range(assignment_index + 1, function_end):
+		lines[index] = word.sub(str(lines[index]), replacement_name, true)
+	var repaired := "\n".join(lines)
+	if not safely_replace_text_file(path, repaired, "deterministic-unbound-local-shadow"):
+		return false
+	automatic_name_repairs[repair_key] = true
+	for code_id in range(rendered_code_paths.size()):
+		if rendered_code_paths[code_id] == path:
+			rendered_code_blocks[code_id] = repaired
+			break
+	artifact_total_retry_count += 1
+	artifact_repair_target_path = path
+	artifact_repair_language = "python"
+	set_status("LOCAL SHADOWING PATCHED • RETESTING", colors.green)
+	set_artifact_monitor_phase("LOCAL NAME PATCH • RETESTING", "Renamed the rendered UI value so it no longer shadows '%s'." % variable_name, 100)
+	show_toast("Fixed %s() local shadowing • retesting the same file" % function_name)
+	launch_supervised_retry.call_deferred(path, "python")
+	return true
 
 func try_deterministic_python_none_piece_repair(path: String, detail: String) -> bool:
 	# Generated falling-block games commonly implement the first hold as a tuple
