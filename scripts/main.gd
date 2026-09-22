@@ -170,6 +170,7 @@ var active_artifact_language := ""
 var active_artifact_request := ""
 var artifact_auto_retry_count := 0
 var artifact_retry_in_progress := false
+var artifact_retry_corrections := ""
 var artifact_partial_response := ""
 var artifact_output_token_budget := 0
 var artifact_progress_next_chars := 0
@@ -3466,6 +3467,8 @@ func send_message() -> void:
 	# history so the model can spend the shared context on one complete file.
 	elif artifact_retry_in_progress:
 		memory = "You are SAM's local code completion engine. Produce exactly one complete, compact, runnable source file in the requested language. Return only one correctly labeled Markdown code fence. Implement every requested feature with real behavior. Never use placeholders, TODOs, simulated results, pass-only handlers, nested fences, explanations, or setup instructions. Prefer concise data-driven code and always close every statement, function, class, and code fence."
+		if not artifact_retry_corrections.is_empty():
+			memory += "\n\nTHE PREVIOUS DRAFT WAS REJECTED. Fix every one of these failures in the fresh complete file:\n- " + artifact_retry_corrections.replace("\n", "\n- ")
 	elif live_voice_turn:
 		memory = compact_memory_for_live_voice(memory)
 		context_desired_output = mini(context_desired_output, 512)
@@ -5817,12 +5820,14 @@ func finish_generation() -> void:
 	var should_offer_image_edit_run := active_image_edit_action
 	var artifact_fence_count := cleaned.count("```")
 	var artifact_has_mixed_fake_fences := cleaned.contains("```gdscript") and (cleaned.contains("```javascript") or cleaned.contains("```php") or cleaned.contains("```swift") or cleaned.contains("```lua"))
-	var artifact_wrong_language := (active_artifact_language == "Godot 4 GDScript" and not cleaned.contains("```gdscript")) or (active_artifact_language == "Python" and not cleaned.contains("```python"))
+	var artifact_language_lower := active_artifact_language.to_lower()
+	var artifact_is_python := artifact_language_lower in ["python", "py"]
+	var artifact_wrong_language := (active_artifact_language == "Godot 4 GDScript" and not cleaned.contains("```gdscript")) or (artifact_is_python and not cleaned.contains("```python"))
 	var artifact_has_placeholder := cleaned.contains("res://path/to/") or cleaned.contains("path/to/image") or cleaned.contains("YOUR_IMAGE_PATH") or cleaned.contains("your_image_path") or cleaned.contains("TODO")
 	var cleaned_lower := cleaned.to_lower()
 	var artifact_has_simulated_logic := cleaned_lower.contains("simulate checking") or cleaned_lower.contains("simulate playing") or cleaned_lower.contains("# simulate") or cleaned_lower.contains("placeholder implementation") or cleaned.contains("random.choice([True, False])") or cleaned.contains("random.choice([true, false])")
 	var artifact_has_pass_only_handler := false
-	if active_artifact_language == "Python":
+	if artifact_is_python:
 		var code_lines := cleaned.split("\n")
 		for line_index in range(code_lines.size()):
 			var stripped := str(code_lines[line_index]).strip_edges()
@@ -5833,7 +5838,7 @@ func finish_generation() -> void:
 				if not previous.begins_with("except") and not previous.begins_with("case "):
 					artifact_has_pass_only_handler = true
 					break
-	var artifact_has_fake_image_api := active_artifact_language == "Python" and cleaned.contains("extends Node")
+	var artifact_has_fake_image_api := artifact_is_python and cleaned.contains("extends Node")
 	var artifact_has_broken_image_path := active_image_edit_action and cleaned.contains("+ image_path") and cleaned.contains(".save(")
 	var artifact_has_naive_whole_image_paste := active_image_edit_action and (cleaned.contains(".paste(new_color, (0, 0), img)") or cleaned.contains(".paste(img, (0, 0), img)"))
 	var artifact_ignores_requested_white := active_image_edit_action and active_artifact_request.to_lower().contains("white") and (cleaned.to_lower().contains("transparent") or cleaned.contains("255, 255, 255, 0"))
@@ -5849,7 +5854,30 @@ func finish_generation() -> void:
 	var artifact_game_missing_npcs := game_request and (request_lower.contains("people") or request_lower.contains("npc") or request_lower.contains("talk")) and not (game_source.contains("npc") or game_source.contains("dialog") or game_source.contains("story"))
 	var artifact_game_missing_interiors := game_request and (request_lower.contains("enter buildings") or request_lower.contains("enter a house") or request_lower.contains("inside")) and not (game_source.contains("interior") or game_source.contains("inside_house") or game_source.contains("current_house"))
 	var artifact_game_missing_persistence := game_request and (request_lower.contains("remember") or request_lower.contains("high score") or request_lower.contains("scores")) and not (game_source.contains("json") or game_source.contains("save_game") or game_source.contains("high_score_file"))
-	var artifact_game_too_small := game_request and active_artifact_language == "Python" and cleaned.length() < 8500
+	# Language detection normally returns `python`, while several older guards used
+	# title-case `Python`. That mismatch allowed tiny blue-block demos through.
+	var artifact_game_too_small := game_request and artifact_is_python and cleaned.length() < 8500
+	var artifact_failures: Array[String] = []
+	if cleaned.length() < 120:
+		artifact_failures.append("the model returned almost no source")
+	if artifact_fence_count != 2:
+		artifact_failures.append("the response was not one complete code block")
+	if artifact_wrong_language:
+		artifact_failures.append("the response used the wrong programming language")
+	if artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler:
+		artifact_failures.append("the source still contained placeholder or simulated behavior")
+	if artifact_game_too_small:
+		artifact_failures.append("the game was only a tiny draft instead of the requested complete game")
+	if artifact_game_missing_restart:
+		artifact_failures.append("restart/new-game behavior was missing")
+	if artifact_game_missing_combat:
+		artifact_failures.append("combat or projectiles were missing")
+	if artifact_game_missing_npcs:
+		artifact_failures.append("NPC dialogue/story behavior was missing")
+	if artifact_game_missing_interiors:
+		artifact_failures.append("enterable building interiors were missing")
+	if artifact_game_missing_persistence:
+		artifact_failures.append("score/save persistence was missing")
 	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
 		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and not active_artifact_request.is_empty():
@@ -5865,7 +5893,10 @@ func finish_generation() -> void:
 				history.pop_back()
 			# Keep retry instructions in the system/artifact prompt. Only the user's
 			# original wording belongs in the visible conversation and session memory.
+			var retry_corrections := "\n".join(artifact_failures)
+			artifact_retry_corrections = retry_corrections
 			input_box.text = artifact_repair_prompt if not artifact_repair_target_path.is_empty() and not artifact_repair_prompt.is_empty() else active_artifact_request
+			artifact_build_confirmed_once = true
 			send_button.disabled = false
 			stop_button.disabled = true
 			set_microphone_available(true)
@@ -5874,7 +5905,10 @@ func finish_generation() -> void:
 			show_toast("Incomplete draft discarded • one final rebuild attempt")
 			call_deferred("send_message")
 			return
-		cleaned = "SAM rejected an incomplete or split artifact response from the local model because it was not one complete runnable code file. Nothing was saved or executed. Retry the request; Artifact Builder will require one complete implementation in one correctly labeled code block."
+		var failure_detail := "\n• ".join(artifact_failures)
+		if failure_detail.is_empty():
+			failure_detail = "the generated source failed SAM's safety and completeness checks"
+		cleaned = "BUILD STOPPED — SAM rejected the generated draft after the automatic rebuild because it was still incomplete. Nothing was saved or executed.\n\nMissing or invalid:\n• %s\n\nThe original request is preserved. Press Transmit to try again; SAM will build a fresh complete file." % failure_detail
 		response_text = cleaned
 		render_buffer = ""
 		set_status("INCOMPLETE BUILD REJECTED", colors.amber)
@@ -5895,6 +5929,7 @@ func finish_generation() -> void:
 			show_toast("Repair still needs work • source was not replaced")
 	active_artifact_builder_mode = false
 	active_artifact_language = ""
+	artifact_retry_corrections = ""
 	active_image_edit_action = false
 	if cleaned.count("```") == 2:
 		artifact_partial_response = ""
@@ -5961,6 +5996,13 @@ func finish_generation() -> void:
 		restore_primary_engine_if_needed()
 		complete_pending_session_switch()
 		return
+	# Keep the completed build visible in Chat. The code fence produces the normal
+	# View/Save/Edit/Run/Open action bar, and this receipt restores the elapsed-time
+	# feedback that was previously visible only in the temporary top status line.
+	if completed_artifact_turn and cleaned.count("```") == 2:
+		var artifact_elapsed := (Time.get_ticks_msec() - response_started_ms) / 1000.0
+		cleaned += "\n\nBUILD READY • %.1fs • Use the ▶ Run/Test action below to launch the validated project." % artifact_elapsed
+		response_text = cleaned
 	var final_history_index := -1
 	if not cleaned.is_empty():
 		history.append({"role": "assistant", "content": cleaned})
