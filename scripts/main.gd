@@ -9261,7 +9261,20 @@ func show_missing_dependency_dialog(module: String, path: String, language: Stri
 func queue_artifact_auto_fix(path: String, language: String, detail: String) -> void:
 	if not FileAccess.file_exists(path):
 		return
+	if language.to_lower() in ["python", "py"] and try_deterministic_python_call_repair(path, detail):
+		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_repair(path, detail):
+		return
+	# Never replace an entire file merely because one runtime line failed. If a
+	# traceback is not covered by a safe local patch, preserve the source and open
+	# the editable review flow instead of asking the model to regenerate it.
+	if language.to_lower() in ["python", "py"] and (detail.contains("Traceback (most recent call last)") or detail.contains("TypeError:") or detail.contains("NameError:") or detail.contains("AttributeError:") or detail.contains("IndexError:")):
+		artifact_repair_target_path = path
+		artifact_repair_language = language
+		artifact_repair_prompt = detail.left(3500)
+		close_artifact_build_monitor()
+		set_actionable_status("RUNTIME PATCH NEEDS REVIEW • CLICK TO EDIT", colors.amber, open_artifact_manual_review, "Edit and rerun the same source file")
+		show_toast("The original file was preserved • unsupported runtime patch opened for review")
 		return
 	if artifact_total_retry_count >= 3:
 		close_artifact_build_monitor()
@@ -9280,6 +9293,82 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	set_artifact_monitor_phase("AUTO-FIX • TOTAL ATTEMPT %d OF 3" % artifact_total_retry_count, detail.left(500), 0)
 	show_toast("Auto-fix caught an error • total attempt %d of 3" % artifact_total_retry_count)
 	call_deferred("send_message")
+
+func try_deterministic_python_call_repair(path: String, detail: String) -> bool:
+	var type_marker := "TypeError: "
+	var keyword_marker := "() got an unexpected keyword argument '"
+	var type_start := detail.rfind(type_marker)
+	if type_start < 0:
+		return false
+	var type_text := detail.substr(type_start + type_marker.length()).get_slice("\n", 0).strip_edges()
+	var keyword_at := type_text.find(keyword_marker)
+	if keyword_at <= 0:
+		return false
+	var function_name := type_text.substr(0, keyword_at).strip_edges()
+	var keyword_start := keyword_at + keyword_marker.length()
+	var keyword_end := type_text.find("'", keyword_start)
+	if keyword_end <= keyword_start:
+		return false
+	var keyword_name := type_text.substr(keyword_start, keyword_end - keyword_start)
+	if not function_name.is_valid_identifier() or not keyword_name.is_valid_identifier():
+		return false
+	var repair_key := path + "::unexpected-keyword::" + function_name + "::" + keyword_name
+	if bool(automatic_name_repairs.get(repair_key, false)):
+		return false
+	var source := FileAccess.get_file_as_string(path)
+	if source.is_empty():
+		return false
+	var lines := source.split("\n")
+	var definition_index := -1
+	var assignment_index := -1
+	var definition_prefix := "def %s(" % function_name
+	for index in range(lines.size()):
+		var trimmed := str(lines[index]).strip_edges()
+		if definition_index < 0 and trimmed.begins_with(definition_prefix):
+			definition_index = index
+			if trimmed.contains(keyword_name + "=") or trimmed.contains(keyword_name + " ="):
+				return false
+			continue
+		if definition_index >= 0:
+			if trimmed.begins_with("def ") or trimmed.begins_with("class "):
+				break
+			if trimmed.begins_with(keyword_name + " = "):
+				assignment_index = index
+				break
+	if definition_index < 0 or assignment_index < 0:
+		return false
+	var definition := str(lines[definition_index])
+	var close_paren := definition.rfind(")")
+	if close_paren < 0:
+		return false
+	var separator := "" if definition.substr(0, close_paren).ends_with("(") else ", "
+	lines[definition_index] = definition.insert(close_paren, separator + keyword_name + "=None")
+	var assignment := str(lines[assignment_index])
+	var indentation := assignment.left(assignment.length() - assignment.strip_edges(true, false).length())
+	var expression := assignment.strip_edges().trim_prefix(keyword_name + " = ")
+	lines[assignment_index] = "%sif %s is None:\n%s    %s = %s" % [indentation, keyword_name, indentation, keyword_name, expression]
+	# A black ghost on a black playfield is technically accepted but invisible.
+	# Preserve the requested ghost feature while repairing this common signature.
+	if keyword_name == "color":
+		for index in range(lines.size()):
+			if str(lines[index]).contains("color=BLACK"):
+				lines[index] = str(lines[index]).replace("color=BLACK", "color=(80, 80, 80)")
+	var repaired := "\n".join(lines)
+	if not safely_replace_text_file(path, repaired, "deterministic-unexpected-keyword"):
+		return false
+	automatic_name_repairs[repair_key] = true
+	for code_id in range(rendered_code_paths.size()):
+		if rendered_code_paths[code_id] == path:
+			rendered_code_blocks[code_id] = repaired
+			break
+	artifact_total_retry_count += 1
+	artifact_repair_target_path = path
+	artifact_repair_language = "python"
+	set_status("PATCHED %s(%s=…) • RETESTING" % [function_name, keyword_name], colors.green)
+	set_artifact_monitor_phase("LOCAL LINE PATCH • RETESTING", "Updated only %s() to accept '%s'; the rest of the file was preserved." % [function_name, keyword_name], 100)
+	show_toast("Patched only %s() and retesting the same file" % function_name)
+	launch_supervised_retry.call_deferred(path, "python")
+	return true
 
 func try_deterministic_python_repair(path: String, detail: String) -> bool:
 	var known_constants := {
