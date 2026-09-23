@@ -201,6 +201,7 @@ var artifact_monitor_compact_progress: ProgressBar
 var artifact_monitor_compact_label: Label
 var artifact_monitor_cat: Control
 var artifact_monitor_compact_size_index := 0
+var artifact_monitor_user_minimized := false
 var builder_cat_telemetry: Dictionary = {}
 var builder_cat_telemetry_sequence := 0
 var active_image_edit_action := false
@@ -3571,13 +3572,18 @@ func send_message() -> void:
 		if is_complex_desktop_artifact_request(request_text):
 			context_desired_output = maxi(context_desired_output, 8192)
 			memory += "\nCOMPLEX DESKTOP BUILD CONTRACT: Scope size is not a reason to refuse, summarize, outline, or return a placeholder. Implement a compact but operational version now. Use concise reusable classes and data tables. For a Windows media explorer, include a responsive background recursive scanner, image/video/audio filters, sortable details, thumbnail loading, Windows Open/Open With/Open File Location actions, cancellation and progress, plus the requested GPU/OpenGL view with a graceful dependency fallback. Optional packages may be imported conditionally, but every core control must work."
-		show_artifact_build_monitor.call_deferred()
 		if not artifact_retry_in_progress and artifact_repair_target_path.is_empty():
+			artifact_monitor_user_minimized = false
 			active_artifact_request = request_text
 			artifact_auto_retry_count = 0
 			artifact_empty_retry_count = 0
 			artifact_retry_in_progress = false
 			artifact_partial_response = ""
+		show_artifact_build_monitor.call_deferred()
+		var artifact_request_lower := request_text.to_lower()
+		var simple_media_scanner := artifact_request_lower.contains("scan") and (artifact_request_lower.contains("drive") or artifact_request_lower.contains("folder")) and (artifact_request_lower.contains("image") or artifact_request_lower.contains("video") or artifact_request_lower.contains("music") or artifact_request_lower.contains("media"))
+		if simple_media_scanner:
+			memory += "\nMEDIA SCANNER BUILD CONTRACT: Perform recursive scanning in a real background worker so the window remains responsive, and marshal all UI updates back to the UI thread. Every matched image, video, and music file must remain visible in the scrollable results: use a real image thumbnail where available and a labeled media-type fallback tile/icon otherwise. Implement only the Windows shell actions the user actually requested. If the user asked to double-click to open a file, bind double-click to the normal Windows default-app open operation; do not invent Open With, Properties, or Open File Location requirements."
 		code_mode = true
 		# Image manipulation is a local file-processing job. Never route it to the
 		# Godot project builder merely because the request is visual.
@@ -5941,10 +5947,17 @@ func finish_generation() -> void:
 	var media_explorer_request := request_lower.contains("scan") and request_lower.contains("drive") and request_lower.contains("image") and request_lower.contains("video")
 	var gpu_desktop_request := media_explorer_request and (request_lower.contains("gpu") or request_lower.contains("opengl") or request_lower.contains("3d"))
 	var artifact_media_missing_scan := media_explorer_request and not (game_source.contains("os.walk") or game_source.contains("os.scandir") or game_source.contains("qdiriterator") or game_source.contains("rglob("))
-	var artifact_media_missing_worker := media_explorer_request and not (game_source.contains("qthread") or game_source.contains("threading.thread") or game_source.contains("threadpoolexecutor") or game_source.contains("qrunnable"))
+	var artifact_media_missing_worker := media_explorer_request and not (game_source.contains("qthread") or game_source.contains("threading.thread") or (game_source.contains("from threading import") and game_source.contains("thread(")) or game_source.contains("threadpoolexecutor") or game_source.contains("concurrent.futures") or game_source.contains("qrunnable") or game_source.contains("asyncio.to_thread"))
 	var artifact_media_missing_filters := media_explorer_request and not (game_source.contains("image") and game_source.contains("video") and (game_source.contains("audio") or game_source.contains("music")))
 	var artifact_media_missing_opengl := gpu_desktop_request and not (game_source.contains("qopenglwidget") or game_source.contains("moderngl") or game_source.contains("opengl.gl") or game_source.contains("glshadersource"))
-	var artifact_media_missing_shell_actions := media_explorer_request and not (game_source.contains("openas_rundll") or game_source.contains("/select,") or game_source.contains("shellexecute") or game_source.contains("open file location"))
+	var requests_open_with := request_lower.contains("open with")
+	var requests_open_location := request_lower.contains("open file location") or request_lower.contains("show in explorer") or request_lower.contains("reveal in explorer") or request_lower.contains("explorer /select")
+	var requests_properties := request_lower.contains("properties") or request_lower.contains("file properties")
+	var requested_advanced_shell_actions := requests_open_with or requests_open_location or requests_properties
+	var has_open_with := game_source.contains("openas_rundll") or game_source.contains("open with") or (game_source.contains("shellexecute") and game_source.contains("openas"))
+	var has_open_location := game_source.contains("/select,") or game_source.contains("open file location") or game_source.contains("explorer.exe")
+	var has_properties := game_source.contains("properties") and (game_source.contains("shellexecute") or game_source.contains("shell.application"))
+	var artifact_media_missing_shell_actions := media_explorer_request and requested_advanced_shell_actions and ((requests_open_with and not has_open_with) or (requests_open_location and not has_open_location) or (requests_properties and not has_properties))
 	var artifact_complex_too_small := is_complex_desktop_artifact_request(active_artifact_request) and extracted_artifact_source.length() < 6000
 	var proposed_revision_source := extract_first_fenced_code(cleaned) if not completed_repair_path.is_empty() else ""
 	var existing_revision_source := FileAccess.get_file_as_string(completed_repair_path) if not completed_repair_path.is_empty() and FileAccess.file_exists(completed_repair_path) else ""
@@ -8104,6 +8117,11 @@ func show_artifact_build_confirmation(request: String, initial_influence: String
 	dialog.popup_centered_clamped(Vector2i(820, 600), 0.92)
 
 func show_artifact_build_monitor() -> void:
+	if artifact_monitor_user_minimized:
+		if is_instance_valid(artifact_monitor):
+			artifact_monitor.hide()
+		show_artifact_compact_monitor()
+		return
 	if is_instance_valid(artifact_monitor):
 		artifact_monitor.show()
 		hide_artifact_compact_monitor()
@@ -8189,9 +8207,14 @@ func show_artifact_build_monitor() -> void:
 	monitor.popup_centered_clamped(Vector2i(720, 330), 0.88)
 
 func minimize_artifact_build_monitor() -> void:
+	artifact_monitor_user_minimized = true
 	if is_instance_valid(artifact_monitor):
 		artifact_monitor.hide()
 	show_artifact_compact_monitor()
+
+func restore_artifact_build_monitor() -> void:
+	artifact_monitor_user_minimized = false
+	show_artifact_build_monitor()
 
 func show_artifact_compact_monitor() -> void:
 	if is_instance_valid(artifact_monitor_compact):
@@ -8238,7 +8261,7 @@ func show_artifact_compact_monitor() -> void:
 	row.add_child(resize)
 	var restore := Button.new()
 	restore.text = "RESTORE"
-	restore.pressed.connect(show_artifact_build_monitor)
+	restore.pressed.connect(restore_artifact_build_monitor)
 	row.add_child(restore)
 	artifact_monitor_cat = BUILDER_CAT_SCRIPT.new() as Control
 	artifact_monitor_cat.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -8382,6 +8405,7 @@ func close_artifact_build_monitor() -> void:
 	artifact_monitor_compact_label = null
 	artifact_monitor_cat = null
 	artifact_monitor_compact_size_index = 0
+	artifact_monitor_user_minimized = false
 
 func is_visual_creation_request(value: String) -> bool:
 	var lower := value.to_lower()
