@@ -4852,10 +4852,7 @@ func handle_wan_video_request(user_text: String) -> bool:
 	redraw_history()
 	if not rendered_code_paths.is_empty():
 		rendered_code_paths[rendered_code_paths.size() - 1] = script_path
-	if bool(settings.get("pc_commands_enabled", false)):
-		request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
-	else:
-		show_toast("Wan generation is ready • enable Workspace Tools, then press Run")
+	request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
 	return true
 
 func is_new_image_generation_request(user_text: String) -> bool:
@@ -4914,10 +4911,7 @@ func handle_wan_text_image_request(user_text: String) -> bool:
 	redraw_history()
 	if not rendered_code_paths.is_empty():
 		rendered_code_paths[rendered_code_paths.size() - 1] = script_path
-	if bool(settings.get("pc_commands_enabled", false)):
-		request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
-	else:
-		show_toast("Wan image ready • enable Workspace Tools, then press Run")
+	request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
 	return true
 
 func expand_wan_reference_prompt(user_text: String) -> String:
@@ -5043,10 +5037,7 @@ func handle_wan_reference_image_request(user_text: String) -> bool:
 	redraw_history()
 	if not rendered_code_paths.is_empty():
 		rendered_code_paths[rendered_code_paths.size() - 1] = script_path
-	if bool(settings.get("pc_commands_enabled", false)):
-		request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
-	else:
-		show_toast("Wan reference job ready • enable Workspace Tools, then press Run")
+	request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
 	return true
 
 func handle_wan_image_request(user_text: String) -> bool:
@@ -5146,10 +5137,7 @@ func handle_direct_clothing_replace(user_text: String) -> bool:
 	redraw_history()
 	if not rendered_code_paths.is_empty():
 		rendered_code_paths[rendered_code_paths.size() - 1] = script_path
-	if bool(settings.get("pc_commands_enabled", false)):
-		request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
-	else:
-		show_toast("Clothing edit ready • enable Workspace Tools, then press Run")
+	request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
 	return true
 
 func answer_disallowed_nudification(user_text: String) -> bool:
@@ -5227,10 +5215,7 @@ func handle_direct_shirt_recolor(user_text: String) -> bool:
 	redraw_history()
 	if not rendered_code_paths.is_empty():
 		rendered_code_paths[rendered_code_paths.size() - 1] = script_path
-	if bool(settings.get("pc_commands_enabled", false)):
-		request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
-	else:
-		show_toast("Shirt recolor is ready • enable Workspace Tools, then press Run")
+	request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
 	return true
 
 func answer_unavailable_generative_image_edit(user_text: String) -> bool:
@@ -6083,7 +6068,7 @@ func finish_generation() -> void:
 		close_artifact_build_monitor()
 		if artifact_build_rejected:
 			show_artifact_failure_dialog.call_deferred(cleaned)
-	if should_offer_image_edit_run and not rendered_code_blocks.is_empty() and bool(settings.get("pc_commands_enabled", false)):
+	if should_offer_image_edit_run and not rendered_code_blocks.is_empty():
 		# The edit request itself authorizes preparing the job, but execution still
 		# receives the normal one-run confirmation with the exact script path.
 		request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
@@ -9067,7 +9052,11 @@ func request_run_rendered_code(code_id: int) -> void:
 			log_line("PC TOOL", "User opened supervised standard run for %s (PID %d)" % [path, pid])
 			show_toast("Supervised debug window opened • close it to stop the script" if pid > 0 else "Could not open the supervised debug window")
 		dialog.queue_free())
-	dialog.canceled.connect(dialog.queue_free)
+	dialog.canceled.connect(func():
+		if is_visual_job and is_instance_valid(visual_studio):
+			visual_studio.set_busy(false)
+			visual_studio.set_status("Visual generation is prepared but was not started. Press Generate when you are ready to approve a run.")
+		dialog.queue_free())
 	add_child(dialog)
 	apply_theme_recursive(dialog)
 	style_security_dialog(dialog, colors.amber)
@@ -9081,7 +9070,10 @@ func request_run_rendered_code(code_id: int) -> void:
 
 func request_open_with_rendered_code(code_id: int) -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
-		show_toast("PC commands are locked • enable Workspace Tools from the top lock")
+		pending_tool_enable_code_id = code_id
+		pending_tool_enable_action = "open"
+		show_toast("Enable Workspace Tools once • SAM will continue opening the project")
+		show_enable_pc_commands_confirmation.call_deferred()
 		return
 	var path := prepare_rendered_code_in_workspace(code_id)
 	if path.is_empty():
@@ -9092,7 +9084,10 @@ func request_open_with_rendered_code(code_id: int) -> void:
 
 func request_edit_rendered_code(code_id: int) -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
-		show_toast("PC commands are locked • enable Workspace Tools from the top lock")
+		pending_tool_enable_code_id = code_id
+		pending_tool_enable_action = "edit"
+		show_toast("Enable Workspace Tools once • SAM will continue opening the editor")
+		show_enable_pc_commands_confirmation.call_deferred()
 		return
 	var path := prepare_rendered_code_in_workspace(code_id)
 	if path.is_empty():
@@ -13697,7 +13692,10 @@ func run_firewall_admin_action(action: String, app_name := "", app_path := "", r
 
 func run_security_audit() -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
-		show_toast("Workspace Tools are locked • enable them before running the audit")
+		pending_tool_enable_code_id = -1
+		pending_tool_enable_action = "security_audit"
+		show_toast("Enable Workspace Tools once • SAM will continue the security audit")
+		show_enable_pc_commands_confirmation.call_deferred()
 		return
 	if security_audit_pid > 0 and OS.is_process_running(security_audit_pid):
 		show_toast("A security audit is already running")
@@ -16376,12 +16374,23 @@ func show_enable_pc_commands_confirmation() -> void:
 		pending_tool_enable_code_id = -1
 		pending_tool_enable_action = ""
 		dialog.queue_free()
-		if resume_code_id >= 0:
-			if resume_action == "admin":
-				request_run_rendered_code_as_admin.call_deferred(resume_code_id)
-			else:
-				request_run_rendered_code.call_deferred(resume_code_id))
+		if resume_action == "admin":
+			request_run_rendered_code_as_admin.call_deferred(resume_code_id)
+		elif resume_action == "run":
+			request_run_rendered_code.call_deferred(resume_code_id)
+		elif resume_action == "open":
+			request_open_with_rendered_code.call_deferred(resume_code_id)
+		elif resume_action == "edit":
+			request_edit_rendered_code.call_deferred(resume_code_id)
+		elif resume_action == "security_audit":
+			run_security_audit.call_deferred()
+		dialog.set_meta("resume_complete", true))
 	dialog.canceled.connect(func():
+		if pending_tool_enable_code_id >= 0 and pending_tool_enable_code_id < rendered_code_paths.size():
+			var canceled_path := rendered_code_paths[pending_tool_enable_code_id].replace("\\", "/").to_lower()
+			if canceled_path.contains("/wan22_") and is_instance_valid(visual_studio):
+				visual_studio.set_busy(false)
+				visual_studio.set_status("Generation is ready but was not started because Workspace Tools were not enabled.")
 		pending_tool_enable_code_id = -1
 		pending_tool_enable_action = ""
 		dialog.queue_free())
