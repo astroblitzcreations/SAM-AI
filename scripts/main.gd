@@ -3341,6 +3341,21 @@ func send_message() -> void:
 		show_artifact_build_confirmation(user_text)
 		return
 	artifact_build_confirmed_once = false
+	# A screenshot of a failed generated app plus a short report such as "it
+	# froze here" is a repair request, even when the user did not open EDIT
+	# PROMPT first. Pair the visual evidence with the exact latest source so the
+	# vision model diagnoses the real app and the validated replacement workflow
+	# updates that same file instead of merely describing the screenshot.
+	if not studio_turn and not attached_image_paths.is_empty() and artifact_repair_target_path.is_empty() and not rendered_code_blocks.is_empty() and screenshot_reports_generated_app_failure(user_text):
+		var latest_code_id := rendered_code_blocks.size() - 1
+		var latest_path := prepare_rendered_code_in_workspace(latest_code_id)
+		if not latest_path.is_empty():
+			artifact_repair_target_path = latest_path
+			artifact_repair_language = detect_code_language(rendered_code_blocks[latest_code_id], latest_path)
+			artifact_repair_prompt = "Repair the attached generated application in place using the user's report and every attached screenshot as runtime evidence. Diagnose the actual application type and root cause from the complete source; do not use a generic game checklist. Preserve every requested and working feature. For desktop GUI freezes, keep long scans, file traversal, network, and other slow work off the UI thread, marshal UI updates safely onto the main thread, provide visible progress/cancel state, and keep controls responsive. Return exactly one complete corrected file in one fenced code block with no placeholders, omitted sections, or tutorial. User report:\n\n%s" % user_text
+			artifact_build_confirmed_once = true
+			attach_file(latest_path)
+			show_toast("Latest app source + screenshot attached • vision-assisted repair starting")
 	if handle_recent_learning_question(user_text):
 		return
 	if handle_memory_quality_command(user_text):
@@ -3472,7 +3487,8 @@ func send_message() -> void:
 		show_toast("Image added to chat • configure Vision MMPROJ for visual understanding")
 	var request_text := user_text
 	if not attached_file_text.is_empty():
-		request_text = build_text_attachment_prompt(user_text)
+		var attachment_instruction := artifact_repair_prompt if not artifact_repair_target_path.is_empty() and not artifact_repair_prompt.is_empty() else user_text
+		request_text = build_text_attachment_prompt(attachment_instruction)
 	var fast_chat := is_lightweight_chat_request(request_text)
 	var command_center_turn := command_center_request_active
 	var live_voice_turn := live_voice_enabled and not command_center_turn
@@ -3597,7 +3613,10 @@ func send_message() -> void:
 		if index == history.size() - 1 and item.role == "user" and command_center_turn and command_center_stage == "vision_diagnose" and not command_center_image_paths.is_empty() and not active_mmproj.is_empty():
 			messages.append({"role": "user", "content": make_multimodal_content_from_paths(request_text + vault_turn_suffix, command_center_image_paths)})
 		elif index == history.size() - 1 and item.role == "user" and not attached_image_paths.is_empty() and not active_mmproj.is_empty():
-			messages.append({"role": "user", "content": make_multimodal_content_from_paths(str(item.content) + vault_turn_suffix, attached_image_paths)})
+			# request_text includes an attached source/log when present. Sending only
+			# item.content here made Vision see the screenshot but not the app it had
+			# to repair.
+			messages.append({"role": "user", "content": make_multimodal_content_from_paths(request_text + vault_turn_suffix, attached_image_paths)})
 		elif index == history.size() - 1 and item.role == "user" and not attached_image_path.is_empty() and not active_mmproj.is_empty():
 			messages.append({"role": "user", "content": make_multimodal_content(str(item.content) + vault_turn_suffix)})
 		elif index == history.size() - 1 and item.role == "user" and not attached_file_text.is_empty():
@@ -7874,6 +7893,14 @@ func is_artifact_creation_request(value: String) -> bool:
 	var artifact := lower.contains("script") or lower.contains("program") or lower.contains("app") or lower.contains("game") or lower.contains("project") or lower.contains("shader") or lower.contains("effect") or lower.contains("animation") or lower.contains("show") or lower.contains("visual") or lower.contains("firework") or lower.contains("background") or lower.contains("demo") or lower.contains("simulation")
 	return creation and artifact
 
+func screenshot_reports_generated_app_failure(value: String) -> bool:
+	var lower := value.to_lower()
+	var markers := ["locked up", "lock up", "froze", "frozen", "freezes", "hangs", "hanging", "stuck", "unresponsive", "crash", "crashed", "broken", "not working", "doesn't work", "doesnt work", "nothing happens", "error", "failed"]
+	for marker in markers:
+		if lower.contains(marker):
+			return true
+	return false
+
 func artifact_build_summary(request: String) -> String:
 	var language := detect_code_language(request)
 	if language.is_empty():
@@ -9607,7 +9634,11 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	artifact_repair_target_path = path
 	artifact_repair_language = language
 	attach_file(path)
-	artifact_repair_prompt = "Repair the attached generated source in place. Diagnose the root state/control-flow cause, not only the final exception line. Preserve every requested feature and return exactly one complete corrected file with no placeholders. Check initialization order, every input path, piece/state representation, timers, window bounds, and restart/pause/hold transitions before answering. Validation/runtime failure:\n\n%s" % detail.left(1800)
+	var app_specific_checks := "Check initialization order, every input path, background-work boundaries, UI-thread safety, cancellation/progress behavior, resource cleanup, and window bounds before answering."
+	var repair_context := (active_artifact_request + "\n" + attached_file_text).to_lower()
+	if repair_context.contains("game") or repair_context.contains("pygame"):
+		app_specific_checks = "Check initialization order, every input path, piece/entity/state representation, timers, collision and window bounds, plus restart/pause/hold transitions before answering."
+	artifact_repair_prompt = "Repair the attached generated source in place. Diagnose the root state/control-flow cause, not only the final exception line. Infer the application type from the actual source and preserve every requested feature. Return exactly one complete corrected file with no placeholders. %s Validation/runtime failure:\n\n%s" % [app_specific_checks, detail.left(1800)]
 	input_box.text = artifact_repair_prompt
 	artifact_build_confirmed_once = true
 	set_status("AUTO-FIX • ASKING SAM TO REPAIR THE BUILD", colors.amber)
