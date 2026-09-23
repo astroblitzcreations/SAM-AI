@@ -181,6 +181,9 @@ var artifact_auto_fix_enabled := true
 var artifact_repair_target_path := ""
 var artifact_repair_language := ""
 var artifact_repair_prompt := ""
+var artifact_vision_diagnosis_active := false
+var artifact_vision_followup_pending := false
+var artifact_vision_notes := ""
 var enhancement_idea_review_pending := false
 var enhancement_idea_code_id := -1
 var enhancement_idea_path := ""
@@ -2304,7 +2307,18 @@ func begin_startup() -> void:
 func discover_portable_components() -> void:
 	var portable_root := OS.get_executable_path().get_base_dir()
 	var portable_server := portable_root.path_join("engine/llama-server.exe")
-	if FileAccess.file_exists(portable_server):
+	var installed_cuda_root := ProjectSettings.globalize_path("user://runtimes/llama-cuda-b11064")
+	var installed_cuda_server := find_file_recursive(installed_cuda_root, "llama-server.exe") if DirAccess.dir_exists_absolute(installed_cuda_root) else ""
+	# Keep an installed accelerated runtime selected across project/editor launches.
+	# Previously the portable CPU fallback replaced it unconditionally every time
+	# Godot started, silently changing GPU layers to zero.
+	if not installed_cuda_server.is_empty() and server_directory_has_acceleration(installed_cuda_server):
+		settings.server_path = installed_cuda_server
+		settings.gpu_layers = maxi(1, int(settings.get("gpu_layers", 99)))
+		if int(settings.gpu_layers) < 2:
+			settings.gpu_layers = 99
+		save_json(SETTINGS_FILE, settings)
+	elif FileAccess.file_exists(portable_server) and (not FileAccess.file_exists(str(settings.server_path)) or not server_directory_has_acceleration(str(settings.server_path))):
 		settings.server_path = portable_server
 		# The bundled runtime is deliberately CPU-only so every supported Windows
 		# computer can start. Users can replace it with CUDA/Vulkan from Modules.
@@ -3279,6 +3293,21 @@ func poll_health() -> void:
 			health_retry_at_ms = now + 500
 
 func resume_pending_vision_send() -> void:
+	if artifact_vision_followup_pending and server_ready_mode == "primary":
+		artifact_vision_followup_pending = false
+		var coder_prompt := artifact_repair_prompt
+		if coder_prompt.is_empty():
+			coder_prompt = "Repair the attached working source using the visual diagnosis. Preserve all working behavior and return one complete corrected file."
+		coder_prompt += "\n\nVISUAL DIAGNOSIS FROM SAM'S VISION MODEL:\n" + artifact_vision_notes.left(12000) + "\n\nUse the diagnosis as evidence, verify it against the complete source, then implement the correction with the primary coding model."
+		input_box.text = coder_prompt
+		if not artifact_repair_target_path.is_empty() and FileAccess.file_exists(artifact_repair_target_path):
+			attach_file(artifact_repair_target_path)
+		artifact_build_confirmed_once = true
+		queued_message_already_shown = true
+		set_status("CODER READY • APPLYING VISUAL DIAGNOSIS", colors.green)
+		log_line("ROUTER", "Primary CUDA coder ready • starting source repair from the completed vision diagnosis")
+		call_deferred("send_message")
+		return
 	if pending_vision_payload_replay and server_ready_mode == "vision":
 		pending_vision_payload_replay = false
 		reset_stream_response_state()
@@ -3430,6 +3459,8 @@ func send_message() -> void:
 	skip_attachment_learning_confirm = false
 	var command_center_needs_vision := command_center_request_active and command_center_stage == "vision_diagnose" and not command_center_image_paths.is_empty()
 	var request_has_image := not attached_image_path.is_empty() or not attached_image_paths.is_empty() or command_center_needs_vision
+	if not artifact_repair_target_path.is_empty() and (not attached_image_path.is_empty() or not attached_image_paths.is_empty()) and not artifact_vision_followup_pending:
+		artifact_vision_diagnosis_active = true
 	var vision_switch_requested := (request_has_image and bool(settings.auto_vision_switch)) or command_center_needs_vision
 	# `engine_mode` describes intent; `server_ready_mode` describes the process
 	# serving port 8080. Require both so a stale primary-ready flag can never receive
@@ -3570,13 +3601,15 @@ func send_message() -> void:
 		memory = "You are SAM's local code completion engine. Produce exactly one complete, compact, runnable source file in the requested language. Return only one correctly labeled Markdown code fence. Implement every requested feature with real behavior. Never use placeholders, TODOs, simulated results, pass-only handlers, nested fences, explanations, or setup instructions. Prefer concise data-driven code and always close every statement, function, class, and code fence."
 		if not artifact_retry_corrections.is_empty():
 			memory += "\n\nTHE PREVIOUS DRAFT WAS REJECTED. Fix every one of these failures in the fresh complete file:\n- " + artifact_retry_corrections.replace("\n", "\n- ")
-	elif not artifact_repair_target_path.is_empty():
+	elif artifact_vision_diagnosis_active:
 		# Screenshot-assisted repairs already carry the complete working source and
-		# visual evidence. The full MemoryCore/tool manual/RAG archive can consume a
-		# small vision model's entire context before it sees either one.
-		memory = "You are SAM's visual code repair engine. Inspect the screenshot as runtime evidence and the attached complete source as the authoritative working application. Diagnose the root cause, preserve all working behavior, and return exactly one complete corrected replacement file in one correctly labeled Markdown code fence. Do not return a patch, tutorial, omitted sections, placeholders, or prose. For Tkinter, keep file traversal off the UI thread and marshal every widget update through root.after or a queue consumed by root.after."
-		context_desired_output = mini(context_desired_output, 4096)
-		log_line("CONTEXT", "Screenshot repair uses compact source + vision contract; unrelated memory and retrieval were excluded")
+		# visual evidence. Vision diagnoses only; the larger CUDA coder applies the
+		# change after SAM restores the primary engine.
+		memory = "You are SAM's visual diagnostic pass. Inspect every screenshot as runtime evidence together with the attached source. Transcribe relevant visible UI/error/status text, identify the exact symptom and likely source-level cause, and state the concrete correction the coding model should make. Do not output code, a patch, or a replacement file. Return only a concise VISUAL DIAGNOSIS."
+		context_desired_output = mini(context_desired_output, 1024)
+		log_line("CONTEXT", "Screenshot repair stage 1 uses Vision for diagnosis only; the primary CUDA coder will perform stage 2")
+	elif not artifact_repair_target_path.is_empty():
+		memory = "You are SAM's primary code repair engine. Work from the complete attached working source and the supplied visual diagnosis. Preserve every working feature and return exactly one complete corrected replacement file in one correctly labeled Markdown code fence. Do not return a patch, tutorial, omitted sections, placeholders, or prose."
 	elif live_voice_turn:
 		memory = compact_memory_for_live_voice(memory)
 		context_desired_output = mini(context_desired_output, 512)
@@ -3620,7 +3653,7 @@ func send_message() -> void:
 	# Live Voice keeps code generation on the normal streaming path so prose can
 	# begin with TTS and fenced source stays silent. The heavy Artifact Builder
 	# presentation path intentionally suppresses streaming and would make voice lag.
-	var artifact_builder_mode := false if command_center_turn or live_voice_turn or studio_turn or build_idea_review_pending else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text) or not artifact_repair_target_path.is_empty())
+	var artifact_builder_mode := false if command_center_turn or live_voice_turn or studio_turn or build_idea_review_pending or artifact_vision_diagnosis_active else (is_artifact_creation_request(request_text) or is_executable_action_request(request_text) or not artifact_repair_target_path.is_empty())
 	active_artifact_builder_mode = artifact_builder_mode
 	active_image_edit_action = artifact_builder_mode and not attached_image_path.is_empty() and is_executable_action_request(request_text)
 	if artifact_builder_mode:
@@ -5982,6 +6015,24 @@ func finish_generation() -> void:
 	var raw_cleaned := clean_output(response_text)
 	var cleaned := apply_humor_response_guard(raw_cleaned)
 	var humor_response_rewritten := cleaned != raw_cleaned
+	if artifact_vision_diagnosis_active:
+		artifact_vision_diagnosis_active = false
+		artifact_vision_notes = cleaned.strip_edges()
+		if artifact_vision_notes.is_empty():
+			artifact_vision_notes = "The vision pass returned no diagnosis. Inspect the user's report and complete source directly and apply the smallest reliable correction."
+		artifact_vision_followup_pending = true
+		response_text = ""
+		render_buffer = ""
+		clear_attachment()
+		set_status("VISION COMPLETE • RESTORING CUDA CODER", colors.amber)
+		set_artifact_monitor_phase("RESTORING PRIMARY CUDA CODER", "Visual diagnosis is complete. SAM is loading the main coding model before changing the application.", 0)
+		log_line("VISION", "Diagnosis complete (%d chars) • restoring primary coder before artifact generation" % artifact_vision_notes.length())
+		send_button.disabled = true
+		stop_button.disabled = false
+		if is_instance_valid(thinking_indicator):
+			thinking_indicator.visible = false
+		restore_primary_engine_if_needed()
+		return
 	if humor_response_rewritten:
 		response_text = cleaned
 		render_buffer = ""
@@ -10420,6 +10471,9 @@ func reset_artifact_repair_state() -> void:
 	artifact_repair_target_path = ""
 	artifact_repair_language = ""
 	artifact_repair_prompt = ""
+	artifact_vision_diagnosis_active = false
+	artifact_vision_followup_pending = false
+	artifact_vision_notes = ""
 	artifact_validation_retry_count = 0
 	artifact_total_retry_count = 0
 	artifact_auto_retry_count = 0
