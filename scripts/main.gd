@@ -200,6 +200,8 @@ var artifact_monitor_compact_progress: ProgressBar
 var artifact_monitor_compact_label: Label
 var artifact_monitor_cat: Control
 var artifact_monitor_compact_size_index := 0
+var builder_cat_telemetry: Dictionary = {}
+var builder_cat_telemetry_sequence := 0
 var active_image_edit_action := false
 var stream_retry_count := 0
 var stream_retry_not_before_ms := 0
@@ -5980,6 +5982,7 @@ func finish_generation() -> void:
 		response_text = cleaned
 		render_buffer = ""
 		set_status("INCOMPLETE BUILD REJECTED", colors.amber)
+		publish_builder_cat_telemetry("build_rejected", failure_detail, 100, {"has_error": true, "validation_failures": artifact_failures, "source_excerpt": builder_source_excerpt(artifact_partial_response)})
 		show_toast("Incomplete or split build rejected • nothing was made runnable")
 	var repaired_source := ""
 	if not completed_repair_path.is_empty():
@@ -5991,6 +5994,7 @@ func finish_generation() -> void:
 			artifact_validation_retry_count = 0
 			artifact_total_retry_count = 0
 			log_line("AUTO FIX", "Validated and saved repaired source: " + completed_repair_path)
+			publish_builder_cat_telemetry("repair_validated", "The corrected revision passed validation and replaced the working file safely.", 100, {"has_error": false, "target_file": completed_repair_path, "source_excerpt": builder_source_excerpt(repaired_source)})
 			show_toast("Auto-fix completed • repaired source validated and saved")
 		else:
 			log_line("AUTO FIX", "Repair response did not pass validation for " + completed_repair_path)
@@ -6107,8 +6111,10 @@ func finish_generation() -> void:
 			rendered_code_paths[completed_code_id] = completed_path
 		var completed_validation := validate_staged_text_file(completed_path, FileAccess.get_file_as_string(completed_path)) if not completed_path.is_empty() else {"ok": false, "detail": "Could not save the generated source."}
 		if not bool(completed_validation.get("ok", false)) and artifact_auto_fix_enabled and artifact_total_retry_count < 3 and not completed_path.is_empty():
+			publish_builder_cat_telemetry("validation_failed", str(completed_validation.get("detail", "Validation failed.")), 100, {"has_error": true, "target_file": completed_path})
 			queue_artifact_auto_fix.call_deferred(completed_path, rendered_code_languages[completed_code_id], str(completed_validation.get("detail", "Validation failed.")))
 		else:
+			publish_builder_cat_telemetry("build_ready" if bool(completed_validation.get("ok", false)) else "manual_review_required", str(completed_validation.get("detail", "Validation complete.")), 100, {"has_error": not bool(completed_validation.get("ok", false)), "target_file": completed_path, "source_excerpt": builder_source_excerpt(FileAccess.get_file_as_string(completed_path) if FileAccess.file_exists(completed_path) else "")})
 			show_artifact_result_dialog.call_deferred(completed_code_id, completed_path, completed_validation)
 	elif completed_artifact_turn:
 		close_artifact_build_monitor()
@@ -8168,6 +8174,10 @@ func show_artifact_compact_monitor() -> void:
 	artifact_monitor_cat = BUILDER_CAT_SCRIPT.new() as Control
 	artifact_monitor_cat.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	compact_stack.add_child(artifact_monitor_cat)
+	if not builder_cat_telemetry.is_empty():
+		artifact_monitor_cat.set_meta("build_telemetry", builder_cat_telemetry.duplicate(true))
+		if artifact_monitor_cat.has_method("set_build_telemetry"):
+			artifact_monitor_cat.call("set_build_telemetry", builder_cat_telemetry.duplicate(true))
 	add_child(card)
 	apply_theme_recursive(card)
 	resize_artifact_compact_monitor()
@@ -8211,6 +8221,14 @@ func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: i
 		artifact_monitor_label.text = "BUILDING COMPLETE FILE%s" % attempt_text
 	if is_instance_valid(artifact_monitor_detail):
 		artifact_monitor_detail.text = "%d characters • %d lines • about %d of %d output tokens" % [chars, lines, approximate_tokens, budget]
+	publish_builder_cat_telemetry("generating", "SAM is writing and reviewing the complete source file", percent, {
+		"characters": chars,
+		"lines": lines,
+		"approximate_tokens": approximate_tokens,
+		"output_token_budget": budget,
+		"source_excerpt": builder_source_excerpt(response_text),
+		"has_error": false
+	})
 
 func set_artifact_monitor_phase(title: String, detail: String, percent := -1) -> void:
 	if not is_instance_valid(artifact_monitor):
@@ -8225,6 +8243,60 @@ func set_artifact_monitor_phase(title: String, detail: String, percent := -1) ->
 		artifact_monitor_compact_progress.value = percent
 		if is_instance_valid(artifact_monitor_cat):
 			artifact_monitor_cat.call("set_progress", float(percent))
+	var phase_percent := percent
+	if phase_percent < 0 and is_instance_valid(artifact_monitor_progress):
+		phase_percent = int(artifact_monitor_progress.value)
+	publish_builder_cat_telemetry(title.to_lower().replace(" ", "_"), detail, maxi(phase_percent, 0), {
+		"has_error": title.to_lower().contains("error") or title.to_lower().contains("failed") or title.to_lower().contains("rejected") or title.to_lower().contains("repair"),
+		"source_excerpt": builder_source_excerpt(response_text)
+	})
+
+func builder_source_excerpt(source: String) -> String:
+	var clean := source.replace("\r", "").strip_edges()
+	if clean.length() <= 720:
+		return clean
+	return clean.left(320) + "\n… SOURCE IN PROGRESS …\n" + clean.right(360)
+
+func publish_builder_cat_telemetry(phase: String, detail: String, percent: int, extra: Dictionary = {}) -> void:
+	builder_cat_telemetry_sequence += 1
+	var event := {
+		"schema": "sam.builder_cat.telemetry.v1",
+		"sequence": builder_cat_telemetry_sequence,
+		"timestamp": Time.get_datetime_string_from_system(),
+		"ticks_msec": Time.get_ticks_msec(),
+		"build_id": response_started_ms,
+		"phase": phase,
+		"detail": detail.left(1200),
+		"percent": clampi(percent, 0, 100),
+		"language": active_artifact_language,
+		"auto_fix_attempt": artifact_validation_retry_count,
+		"rebuild_attempt": artifact_auto_retry_count,
+		"total_retry_count": artifact_total_retry_count,
+		"repairing_existing_app": not artifact_repair_target_path.is_empty(),
+		"target_file": artifact_repair_target_path,
+		"request_summary": active_artifact_request.left(800)
+	}
+	for key in extra:
+		event[key] = extra[key]
+	builder_cat_telemetry = event
+	# The current cat can read this metadata immediately. A future upgraded cat
+	# can implement set_build_telemetry(event) without requiring another change to
+	# the builder pipeline.
+	if is_instance_valid(artifact_monitor_cat):
+		artifact_monitor_cat.set_meta("build_telemetry", event.duplicate(true))
+		if artifact_monitor_cat.has_method("set_build_telemetry"):
+			artifact_monitor_cat.call("set_build_telemetry", event.duplicate(true))
+	var telemetry_path := active_session_workspace_dir().path_join("builder_cat_telemetry.jsonl")
+	var telemetry_file: FileAccess
+	if FileAccess.file_exists(telemetry_path):
+		telemetry_file = FileAccess.open(telemetry_path, FileAccess.READ_WRITE)
+		if telemetry_file:
+			telemetry_file.seek_end()
+	else:
+		telemetry_file = FileAccess.open(telemetry_path, FileAccess.WRITE)
+	if telemetry_file:
+		telemetry_file.store_line(JSON.stringify(event))
+		telemetry_file.close()
 
 func close_artifact_build_monitor() -> void:
 	if is_instance_valid(artifact_monitor):
