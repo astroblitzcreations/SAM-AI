@@ -3564,6 +3564,11 @@ func send_message() -> void:
 	active_artifact_builder_mode = artifact_builder_mode
 	active_image_edit_action = artifact_builder_mode and not attached_image_path.is_empty() and is_executable_action_request(request_text)
 	if artifact_builder_mode:
+		# Full desktop/GPU utilities cannot fit reliably in the ordinary conversational
+		# answer budget. Let automatic context management reserve enough completion
+		# room instead of encouraging a tiny outline or placeholder response.
+		if is_complex_desktop_artifact_request(request_text):
+			context_desired_output = maxi(context_desired_output, 8192)
 		show_artifact_build_monitor.call_deferred()
 		if not artifact_retry_in_progress and artifact_repair_target_path.is_empty():
 			active_artifact_request = request_text
@@ -5880,9 +5885,16 @@ func finish_generation() -> void:
 	var artifact_language_lower := active_artifact_language.to_lower()
 	var artifact_is_python := artifact_language_lower in ["python", "py"]
 	var artifact_wrong_language := (active_artifact_language == "Godot 4 GDScript" and not cleaned.contains("```gdscript")) or (artifact_is_python and not cleaned.contains("```python"))
-	var artifact_has_placeholder := cleaned.contains("res://path/to/") or cleaned.contains("path/to/image") or cleaned.contains("YOUR_IMAGE_PATH") or cleaned.contains("your_image_path") or cleaned.contains("TODO")
 	var cleaned_lower := cleaned.to_lower()
+	var artifact_has_placeholder := cleaned.contains("res://path/to/") or cleaned.contains("path/to/image") or cleaned.contains("YOUR_IMAGE_PATH") or cleaned.contains("your_image_path") or cleaned.contains("TODO") or cleaned_lower.contains("placeholder response") or cleaned_lower.contains("this placeholder") or cleaned_lower.contains("actual implementation would require") or cleaned_lower.contains("to build and run the application, you would need") or cleaned_lower.contains("overview of the key components") or cleaned_lower.contains("conceptual implementation") or cleaned_lower.contains("for demonstration purposes") or cleaned_lower.contains("due to the complexity of the application")
 	var artifact_has_simulated_logic := cleaned_lower.contains("simulate checking") or cleaned_lower.contains("simulate playing") or cleaned_lower.contains("# simulate") or cleaned_lower.contains("placeholder implementation") or cleaned.contains("random.choice([True, False])") or cleaned.contains("random.choice([true, false])")
+	var substantive_source_lines := 0
+	var extracted_artifact_source := extract_first_fenced_code(cleaned)
+	for source_line in extracted_artifact_source.split("\n"):
+		var substantive_line := str(source_line).strip_edges()
+		if not substantive_line.is_empty() and not substantive_line.begins_with("#") and not substantive_line.begins_with("//"):
+			substantive_source_lines += 1
+	var artifact_is_comment_outline := not extracted_artifact_source.is_empty() and substantive_source_lines < 12
 	var artifact_has_pass_only_handler := false
 	if artifact_is_python:
 		var code_lines := cleaned.split("\n")
@@ -5906,6 +5918,14 @@ func finish_generation() -> void:
 	var request_lower := active_artifact_request.to_lower()
 	var game_request := request_lower.contains("game")
 	var game_source := cleaned_lower
+	var media_explorer_request := request_lower.contains("scan") and request_lower.contains("drive") and request_lower.contains("image") and request_lower.contains("video")
+	var gpu_desktop_request := media_explorer_request and (request_lower.contains("gpu") or request_lower.contains("opengl") or request_lower.contains("3d"))
+	var artifact_media_missing_scan := media_explorer_request and not (game_source.contains("os.walk") or game_source.contains("os.scandir") or game_source.contains("qdiriterator") or game_source.contains("rglob("))
+	var artifact_media_missing_worker := media_explorer_request and not (game_source.contains("qthread") or game_source.contains("threading.thread") or game_source.contains("threadpoolexecutor") or game_source.contains("qrunnable"))
+	var artifact_media_missing_filters := media_explorer_request and not (game_source.contains("image") and game_source.contains("video") and (game_source.contains("audio") or game_source.contains("music")))
+	var artifact_media_missing_opengl := gpu_desktop_request and not (game_source.contains("qopenglwidget") or game_source.contains("moderngl") or game_source.contains("opengl.gl") or game_source.contains("glshadersource"))
+	var artifact_media_missing_shell_actions := media_explorer_request and not (game_source.contains("openas_rundll") or game_source.contains("/select,") or game_source.contains("shellexecute") or game_source.contains("open file location"))
+	var artifact_complex_too_small := is_complex_desktop_artifact_request(active_artifact_request) and extracted_artifact_source.length() < 6000
 	var proposed_revision_source := extract_first_fenced_code(cleaned) if not completed_repair_path.is_empty() else ""
 	var existing_revision_source := FileAccess.get_file_as_string(completed_repair_path) if not completed_repair_path.is_empty() and FileAccess.file_exists(completed_repair_path) else ""
 	var artifact_revision_unchanged := not proposed_revision_source.is_empty() and not existing_revision_source.is_empty() and proposed_revision_source.strip_edges() == existing_revision_source.strip_edges()
@@ -5927,8 +5947,20 @@ func finish_generation() -> void:
 		artifact_failures.append("the response was not one complete code block")
 	if artifact_wrong_language:
 		artifact_failures.append("the response used the wrong programming language")
-	if artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler:
+	if artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_is_comment_outline:
 		artifact_failures.append("the source still contained placeholder or simulated behavior")
+	if artifact_complex_too_small:
+		artifact_failures.append("the complex desktop application was only a tiny outline instead of an operational implementation")
+	if artifact_media_missing_scan:
+		artifact_failures.append("the media explorer had no real recursive drive scanner")
+	if artifact_media_missing_worker:
+		artifact_failures.append("the media scan had no background worker and would freeze or block the UI")
+	if artifact_media_missing_filters:
+		artifact_failures.append("image, video, and music category filtering was not implemented")
+	if artifact_media_missing_opengl:
+		artifact_failures.append("the requested GPU-backed OpenGL/3D viewport was not implemented")
+	if artifact_media_missing_shell_actions:
+		artifact_failures.append("the requested Windows shell open/location/Open With operations were not implemented")
 	if artifact_game_too_small:
 		artifact_failures.append("the game was only a tiny draft instead of the requested complete game")
 	if artifact_game_missing_restart:
@@ -5947,7 +5979,7 @@ func finish_generation() -> void:
 		artifact_failures.append("the proposed revision discarded most of the working application instead of preserving and upgrading it")
 	if artifact_revision_invalid:
 		artifact_failures.append("the proposed revision failed source validation: %s" % str(proposed_revision_validation.get("detail", "validation failed")).left(500))
-	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged or artifact_revision_severely_reduced or artifact_revision_invalid):
+	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_is_comment_outline or artifact_complex_too_small or artifact_media_missing_scan or artifact_media_missing_worker or artifact_media_missing_filters or artifact_media_missing_opengl or artifact_media_missing_shell_actions or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged or artifact_revision_severely_reduced or artifact_revision_invalid):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
 		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
 			artifact_auto_retry_count += 1
@@ -7926,6 +7958,14 @@ func is_artifact_creation_request(value: String) -> bool:
 	var creation := lower.contains("make me") or lower.contains("create me") or lower.contains("build me") or lower.contains("write me") or lower.contains("generate me") or lower.contains("make a") or lower.contains("create a") or lower.contains("build a") or lower.contains("generate a") or lower.contains("write a")
 	var artifact := lower.contains("script") or lower.contains("program") or lower.contains("app") or lower.contains("game") or lower.contains("project") or lower.contains("shader") or lower.contains("effect") or lower.contains("animation") or lower.contains("show") or lower.contains("visual") or lower.contains("firework") or lower.contains("background") or lower.contains("demo") or lower.contains("simulation")
 	return creation and artifact
+
+func is_complex_desktop_artifact_request(value: String) -> bool:
+	var lower := value.to_lower()
+	var desktop_app := lower.contains("python") and (lower.contains("desktop") or lower.contains("windows") or lower.contains("app"))
+	var broad_file_tool := lower.contains("scan") and (lower.contains("drive") or lower.contains("folder")) and (lower.contains("thumbnail") or lower.contains("media") or lower.contains("file manager"))
+	var advanced_rendering := lower.contains("opengl") or lower.contains("gpu") or lower.contains("3d") or lower.contains("shader")
+	var many_features := value.length() >= 1200
+	return desktop_app and (many_features or (broad_file_tool and advanced_rendering))
 
 func screenshot_reports_generated_app_failure(value: String) -> bool:
 	var lower := value.to_lower()

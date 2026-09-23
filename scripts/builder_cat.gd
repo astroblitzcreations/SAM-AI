@@ -39,8 +39,16 @@ var comedy_timer := 0.0
 var comedy_index := 0
 var progress_label: Label
 var state_label: Label
+var phase_label: Label
+var stats_label: Label
+var snippet_label: Label
+var error_label: Label
 var text_column: VBoxContainer
 var builder_viewport: SubViewport
+var build_telemetry: Dictionary = {}
+var telemetry_history: Array[Dictionary] = []
+var telemetry_sequence := -1
+var display_size_level := 0
 
 const CAT_SCALE := 0.82
 const CAT_GROUND_Y := 0.08
@@ -344,15 +352,104 @@ func build_labels() -> void:
 	state_label.add_theme_font_size_override("font_size", 10)
 	state_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	text_column.add_child(state_label)
+	phase_label = Label.new()
+	phase_label.add_theme_color_override("font_color", Color("#f9c74f"))
+	phase_label.add_theme_font_size_override("font_size", 9)
+	phase_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	text_column.add_child(phase_label)
+	stats_label = Label.new()
+	stats_label.add_theme_color_override("font_color", Color("#9eb4cc"))
+	stats_label.add_theme_font_size_override("font_size", 9)
+	stats_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	stats_label.visible = false
+	text_column.add_child(stats_label)
+	error_label = Label.new()
+	error_label.add_theme_color_override("font_color", Color("#ff8095"))
+	error_label.add_theme_font_size_override("font_size", 9)
+	error_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	error_label.visible = false
+	text_column.add_child(error_label)
+	snippet_label = Label.new()
+	snippet_label.add_theme_color_override("font_color", Color("#8fd8e8"))
+	snippet_label.add_theme_font_size_override("font_size", 8)
+	snippet_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	snippet_label.visible = false
+	text_column.add_child(snippet_label)
 	update_text()
 
 func set_display_size_level(level: int) -> void:
 	if not is_instance_valid(progress_label) or not is_instance_valid(state_label) or not is_instance_valid(text_column):
 		return
 	var safe_level := clampi(level, 0, 2)
-	text_column.custom_minimum_size.x = [132.0, 184.0, 240.0][safe_level]
+	display_size_level = safe_level
+	text_column.custom_minimum_size.x = [132.0, 250.0, 360.0][safe_level]
 	progress_label.add_theme_font_size_override("font_size", [12, 18, 24][safe_level])
 	state_label.add_theme_font_size_override("font_size", [10, 15, 20][safe_level])
+	phase_label.add_theme_font_size_override("font_size", [8, 12, 15][safe_level])
+	stats_label.add_theme_font_size_override("font_size", [8, 11, 14][safe_level])
+	error_label.add_theme_font_size_override("font_size", [8, 11, 14][safe_level])
+	snippet_label.add_theme_font_size_override("font_size", [8, 10, 12][safe_level])
+	stats_label.visible = safe_level >= 1
+	snippet_label.visible = safe_level >= 2 and not str(build_telemetry.get("source_excerpt", "")).is_empty()
+	error_label.visible = bool(build_telemetry.get("has_error", false))
+	refresh_telemetry_labels()
+
+func set_build_telemetry(event: Dictionary) -> void:
+	var sequence := int(event.get("sequence", telemetry_sequence + 1))
+	if sequence < telemetry_sequence:
+		return
+	telemetry_sequence = sequence
+	build_telemetry = event.duplicate(true)
+	telemetry_history.append(build_telemetry.duplicate(true))
+	if telemetry_history.size() > 48:
+		telemetry_history.pop_front()
+	set_progress(float(event.get("percent", _progress)))
+	refresh_telemetry_labels()
+	var phase := str(event.get("phase", "")).to_lower()
+	var has_error := bool(event.get("has_error", false))
+	if has_error:
+		set_storm(true)
+		if is_instance_valid(cat_root):
+			set_state("scared" if phase.contains("failed") or phase.contains("rejected") else "inspect")
+	elif phase.contains("repair") or phase.contains("validation") or phase.contains("review"):
+		set_storm(false)
+		if is_instance_valid(cat_root): set_state("inspect")
+	elif phase.contains("ready") or phase.contains("complete"):
+		set_storm(false)
+		if is_instance_valid(cat_root): set_state("celebrate")
+	elif phase.contains("generating") or phase.contains("building"):
+		if is_instance_valid(cat_root) and cat_state in ["sleep", "celebrate", "inspect", "scared", "shelter"]:
+			set_state("building")
+
+func get_build_telemetry() -> Dictionary:
+	return build_telemetry.duplicate(true)
+
+func get_telemetry_history() -> Array[Dictionary]:
+	return telemetry_history.duplicate(true)
+
+func refresh_telemetry_labels() -> void:
+	if build_telemetry.is_empty():
+		if is_instance_valid(phase_label): phase_label.text = "Waiting for SAM build telemetry…"
+		return
+	var phase := str(build_telemetry.get("phase", "working")).replace("_", " ").to_upper()
+	var detail := str(build_telemetry.get("detail", "")).strip_edges()
+	var chars := int(build_telemetry.get("characters", 0))
+	var lines := int(build_telemetry.get("lines", 0))
+	var tokens := int(build_telemetry.get("approximate_tokens", 0))
+	var budget := int(build_telemetry.get("output_token_budget", 0))
+	var retry := int(build_telemetry.get("total_retry_count", 0))
+	if is_instance_valid(phase_label):
+		phase_label.text = phase + (" • " + detail.left(180) if not detail.is_empty() else "")
+	if is_instance_valid(stats_label):
+		stats_label.text = "%s • %d chars • %d lines • %d/%d tokens%s" % [str(build_telemetry.get("language", "source")), chars, lines, tokens, budget, " • retry %d" % retry if retry > 0 else ""]
+		stats_label.visible = display_size_level >= 1
+	if is_instance_valid(error_label):
+		error_label.text = "⚠ " + detail.left(260) if bool(build_telemetry.get("has_error", false)) else ""
+		error_label.visible = bool(build_telemetry.get("has_error", false))
+	if is_instance_valid(snippet_label):
+		var excerpt := str(build_telemetry.get("source_excerpt", "")).strip_edges()
+		snippet_label.text = "SOURCE PREVIEW\n" + excerpt.left(700)
+		snippet_label.visible = display_size_level >= 2 and not excerpt.is_empty()
 
 func set_progress(value: float) -> void:
 	var next := clampf(value, 0.0, 100.0)
@@ -508,19 +605,19 @@ func update_day_night() -> void:
 func set_storm(enabled: bool) -> void:
 	if enabled == storm_active: return
 	storm_active = enabled
-	rain.emitting = enabled
+	if is_instance_valid(rain): rain.emitting = enabled
 	lightning_timer = 0.45
-	if enabled: set_state("running")
+	if enabled and is_instance_valid(cat_root): set_state("running")
 	else:
-		lightning.light_energy = 0.0
-		set_state("building")
+		if is_instance_valid(lightning): lightning.light_energy = 0.0
+		if is_instance_valid(cat_root): set_state("building")
 
 func set_state(next: String) -> void:
 	cat_state = next
 	state_timer = 0.0
-	steam.emitting = next in ["coffee", "sleep"]
+	if is_instance_valid(steam): steam.emitting = next in ["coffee", "sleep"]
 	if is_instance_valid(dream_label): dream_label.visible = next == "sleep"
-	cat_root.visible = next != "shelter"
+	if is_instance_valid(cat_root): cat_root.visible = next != "shelter"
 	if next in ["fetching", "carrying", "fetch_light", "carrying_light", "running", "scared"]: play_run(3.2 if next in ["running", "scared"] else (2.35 if next in ["fetching", "fetch_light"] else 2.05))
 	elif is_instance_valid(animation_player): animation_player.pause()
 
@@ -546,8 +643,10 @@ func play_run(speed := 1.0) -> void:
 func update_text() -> void:
 	if not is_instance_valid(progress_label): return
 	progress_label.text = "BUILD %d%%" % int(_progress)
+
 	var message := "Going to get supplies…"
 	match cat_state:
+		# Original Core States (Preserved Exact)
 		"fetching": message = "Running right for supplies"
 		"carrying": message = "Carrying materials left"
 		"building": message = "Building the next house stage"
@@ -562,4 +661,49 @@ func update_text() -> void:
 		"scared": message = "Thunder!"
 		"shelter": message = "Safe inside the glowing house"
 		"celebrate": message = "Build complete!"
-	state_label.text = message
+
+		# Additional Contractor & Tool States
+		"hammering": message = "Whack! Whack! Hard at work (and missing the nail)"
+		"sawing": message = "Zzzzt... measuring twice, cutting once, napping once"
+		"painting": message = "Carefully rolling pastel pink paint onto the walls"
+		"blueprint": message = "Squinting at complicated blueprints upside down"
+		"measuring": message = "Swatting playfully at the moving tape measure"
+		"welding": message = "Wearing tiny safety goggles • spark! spark!"
+		"hard_hat": message = "Adjusting the oversized yellow hard hat"
+		"leveling": message = "Tapping the spirit level with a single claw"
+		"demolition": message = "Pushing a small cup off the counter... for science"
+		"sunset_watch": message = "Pausing work to watch a gorgeous pink sunset"
+
+		# Ultra-Cute "Aww" Moments
+		"curled_up": message = "Sleeping in a perfect little cinnamon roll • aww"
+		"toe_beans": message = "Lying on its back, inspecting clean pink toe beans"
+		"yarn_break": message = "Getting completely tangled in a stray ball of yarn"
+		"sunbeam_nap": message = "Found a warm sunbeam on the floor... progress paused"
+		"tail_twitch": message = "Tail twitching excitedly at an invisible ghost"
+		"head_tilt": message = "Tilting head sideways with giant curious eyes"
+		"baking_bread": message = "Kneading rapid biscuits on a soft carpet square"
+		"box_inspection": message = "If I fits, I sits (currently inside the tool box)"
+		"chirp": message = "Making cute little hacking chirps at a bird outside"
+		"belly_rub": message = "Exposing the soft tummy trap • proceed with caution"
+		"paws_tucked": message = "Status: Loaf mode activated. No arms detected."
+		"whisker_twitch": message = "Whiskers vibrating with pure contentment"
+		"dream_run": message = "Paws twitching rapidly while fast asleep • chasing mice"
+
+		# Extra Quirks & Break Times
+		"zoomies": message = "Sudden 3 AM energy burst happening at 2 PM!"
+		"hiccup": message = "Tiny *hic*... startled dramatically by its own tail"
+		"grooming": message = "Meticulously polishing the fur for maximum professional look"
+		"laser_distraction": message = "Sidenote: Chasing a red dot across the floorboards"
+		"yawn": message = "Massive open-mouth yawn exposing tiny pink tongue"
+		"staring_wall": message = "Staring intently at an empty corner at nothing at all"
+		"cup_bat": message = "Contemplating pushing a mug over the edge..."
+		"sneeze": message = "Achoo! Small sneeze followed by offended face"
+
+		# Weather & Environment Additions
+		"puddle_jump": message = "Stepping in a deep puddle... oh no, wet paw syndrome"
+		"snow_boots": message = "Wearing tiny knitted boots in the winter frost"
+		"windy": message = "Fur blowing fiercely in the high-rise wind tunnel"
+		"dance": message = "Doing a little happy two-step jig on the roof"
+
+	if is_instance_valid(state_label):
+		state_label.text = message
