@@ -224,8 +224,12 @@ var attached_file_text := ""
 var attached_file_kind := ""
 var skip_attachment_learning_confirm := false
 var engine_mode := "primary"
+var engine_launch_mode := ""
+var server_ready_mode := ""
 var pending_vision_send := false
 var pending_primary_text_send := false
+var pending_vision_payload_replay := false
+var vision_payload_recovery_count := 0
 var restore_primary_when_done := false
 var thinking_elapsed := 0.0
 var thinking_frame := -1
@@ -2880,8 +2884,13 @@ func start_engine(context_reload: bool = false) -> void:
 		log_line("ERROR", "Missing server: " + str(settings.server_path))
 		set_startup_progress(0.0, "ENGINE MODULE NOT FOUND", "Open Setup Check and select llama-server.exe")
 		return
-	var active_model := str(settings.vision_model_path) if engine_mode == "vision" else str(settings.model_path)
-	var active_mmproj := str(settings.vision_mmproj_path) if engine_mode == "vision" else str(settings.mmproj_path)
+	# Capture the requested mode for this concrete process. UI/router state can
+	# change again while a large model is loading, so readiness must be attributed
+	# to the process that was actually launched rather than the latest UI value.
+	engine_launch_mode = engine_mode
+	server_ready_mode = ""
+	var active_model := str(settings.vision_model_path) if engine_launch_mode == "vision" else str(settings.model_path)
+	var active_mmproj := str(settings.vision_mmproj_path) if engine_launch_mode == "vision" else str(settings.mmproj_path)
 	if not FileAccess.file_exists(active_model):
 		if recover_context_reload_failure("Model file was not found"):
 			return
@@ -2926,7 +2935,16 @@ func start_engine(context_reload: bool = false) -> void:
 	var load_target := "GPU + RAM" if effective_gpu_layers > 0 else "SYSTEM RAM (CPU MODE)"
 	set_status("LOADING MODEL INTO %s" % load_target, colors.amber)
 	set_startup_progress(52.0, "LOADING MODEL INTO %s" % load_target, "Preparing the local engine • first launch can take a moment")
-	log_line("ENGINE", "Started %s PID %s • %s" % [engine_mode.to_upper(), server_pid, active_model])
+	log_line("ENGINE", "Started %s PID %s • %s" % [engine_launch_mode.to_upper(), server_pid, active_model])
+	if engine_launch_mode == "vision":
+		var mmproj_exists := FileAccess.file_exists(active_mmproj)
+		var mmproj_mb := 0.0
+		if mmproj_exists:
+			var mmproj_file := FileAccess.open(active_mmproj, FileAccess.READ)
+			if mmproj_file:
+				mmproj_mb = float(mmproj_file.get_length()) / 1048576.0
+				mmproj_file.close()
+		log_line("VISION", "Launch MMPROJ: %s • exists=%s • %.1f MB" % [active_mmproj, mmproj_exists, mmproj_mb])
 	log_line("ENGINE", "%s GPU layers • context %s • port %s • log %s" % [effective_gpu_layers, int(settings.context_size), int(settings.port), engine_log_path])
 	if not accelerated_runtime and int(settings.gpu_layers) > 0:
 		log_line("ENGINE", "CPU-only runtime detected; GPU layers were safely changed from %d to 0 for this launch" % int(settings.gpu_layers))
@@ -2951,6 +2969,7 @@ func stop_engine(cancel_active_request: bool = true) -> void:
 	server_pid = -1
 	server_owned = false
 	server_ready = false
+	server_ready_mode = ""
 	health_client.close()
 	stream_client.close()
 	if FileAccess.file_exists(SERVER_PID_FILE):
@@ -3236,8 +3255,9 @@ func poll_health() -> void:
 		health_request_sent = false
 		if code == 200:
 			server_ready = true
+			server_ready_mode = engine_launch_mode
 			set_status("ONLINE • MODEL READY", colors.green)
-			log_line("READY", "Health check passed in %.1fs" % ((now - load_started_ms) / 1000.0))
+			log_line("READY", "%s health check passed in %.1fs" % [server_ready_mode.to_upper(), (now - load_started_ms) / 1000.0])
 			finish_startup()
 			if not resume_context_after_ready():
 				resume_pending_vision_send()
@@ -3245,12 +3265,22 @@ func poll_health() -> void:
 			health_retry_at_ms = now + 500
 
 func resume_pending_vision_send() -> void:
-	if pending_primary_text_send and engine_mode == "primary":
+	if pending_vision_payload_replay and server_ready_mode == "vision":
+		pending_vision_payload_replay = false
+		reset_stream_response_state()
+		set_meta("request_sent", false)
+		stream_client.close()
+		stream_client = HTTPClient.new()
+		stream_client.connect_to_host(HOST, int(settings.port))
+		set_status("VISION ENGINE READY • RETRYING IMAGE", colors.green)
+		log_line("VISION", "Verified vision process ready • replaying the preserved multimodal payload once")
+		return
+	if pending_primary_text_send and engine_mode == "primary" and server_ready_mode == "primary":
 		pending_primary_text_send = false
 		log_line("ROUTER", "Primary model ready • resuming the pending text or code request")
 		call_deferred("send_message")
 		return
-	if pending_vision_send and engine_mode == "vision":
+	if pending_vision_send and engine_mode == "vision" and server_ready_mode == "vision":
 		pending_vision_send = false
 		log_line("VISION", "Vision model ready • resuming the pending image request")
 		call_deferred("send_message")
@@ -3385,7 +3415,12 @@ func send_message() -> void:
 
 	skip_attachment_learning_confirm = false
 	var command_center_needs_vision := command_center_request_active and command_center_stage == "vision_diagnose" and not command_center_image_paths.is_empty()
-	if ((not attached_image_path.is_empty() and bool(settings.auto_vision_switch)) or command_center_needs_vision) and engine_mode != "vision":
+	var request_has_image := not attached_image_path.is_empty() or not attached_image_paths.is_empty() or command_center_needs_vision
+	var vision_switch_requested := (request_has_image and bool(settings.auto_vision_switch)) or command_center_needs_vision
+	# `engine_mode` describes intent; `server_ready_mode` describes the process
+	# serving port 8080. Require both so a stale primary-ready flag can never receive
+	# an image while the vision model is still being swapped in.
+	if vision_switch_requested and (engine_mode != "vision" or server_ready_mode != "vision"):
 		if FileAccess.file_exists(str(settings.vision_model_path)) and FileAccess.file_exists(str(settings.vision_mmproj_path)):
 			pending_primary_text_send = false
 			pending_vision_send = true
@@ -3717,6 +3752,7 @@ func send_message() -> void:
 			request_body.presence_penalty = 0.2
 			request_body.repetition_penalty = 1.05
 	var payload := JSON.stringify(request_body)
+	set_meta("pending_payload_has_images", not attached_image_paths.is_empty() or not attached_image_path.is_empty() or command_center_needs_vision)
 	clear_attachment()
 	set_meta("pending_payload", payload)
 	set_meta("request_sent", false)
@@ -4007,6 +4043,8 @@ func reset_context_for_new_request() -> void:
 	context_prompt_tokens = -1
 	context_protected_tail_count = 1
 	context_desired_output = maxi(CONTEXT_MIN_OUTPUT_TOKENS, int(settings.max_tokens))
+	vision_payload_recovery_count = 0
+	pending_vision_payload_replay = false
 	context_resume_serial = -1
 	humor_laugh_pending = false
 	humor_laugh_injected = false
@@ -4329,17 +4367,23 @@ func handle_stream_http_error() -> void:
 	# Defensive recovery for a routing race: a screenshot must never be sent to
 	# the primary text-only server. Keep the accepted request and load the paired
 	# vision model + MMPROJ exactly once instead of surfacing llama.cpp's HTTP 500.
-	if response_text.is_empty() and engine_mode != "vision" and (not attached_image_path.is_empty() or not attached_image_paths.is_empty()) and body_lower.contains("image input is not supported") and FileAccess.file_exists(str(settings.vision_model_path)) and FileAccess.file_exists(str(settings.vision_mmproj_path)):
+	if response_text.is_empty() and bool(get_meta("pending_payload_has_images", false)) and body_lower.contains("image input is not supported") and vision_payload_recovery_count < 1 and FileAccess.file_exists(str(settings.vision_model_path)) and FileAccess.file_exists(str(settings.vision_mmproj_path)):
 		stream_client.close()
+		vision_payload_recovery_count += 1
 		pending_primary_text_send = false
-		pending_vision_send = true
+		pending_vision_send = false
+		pending_vision_payload_replay = true
 		restore_primary_when_done = true
 		engine_mode = "vision"
 		set_status("ROUTING IMAGE TO VISION ENGINE", colors.amber)
 		show_toast("Screenshot repair • switching to the configured vision model")
-		log_line("VISION", "Recovered image request that reached the primary server; loading vision model with MMPROJ")
+		log_line("VISION", "Image request was rejected by the active server (%s); preserving its encoded payload and force-loading vision + MMPROJ for one verified replay" % server_ready_mode)
 		show_model_switch_overlay()
-		call_deferred("start_engine")
+		# This is an internal transport recovery, not a manual model change. Preserve
+		# `generating`, the accepted user turn, and pending_payload across the swap.
+		# Calling start_engine() without this flag invokes stop_generation() and was
+		# the cause of the visible load/restore loop and lost screenshot retry.
+		call_deferred("start_engine", true)
 		return
 	var overflow := parse_context_overflow(body)
 	if not overflow.is_empty() and response_text.is_empty() and context_overflow_retries < CONTEXT_MAX_OVERFLOW_RETRIES:
