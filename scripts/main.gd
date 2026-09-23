@@ -3569,6 +3569,7 @@ func send_message() -> void:
 		# room instead of encouraging a tiny outline or placeholder response.
 		if is_complex_desktop_artifact_request(request_text):
 			context_desired_output = maxi(context_desired_output, 8192)
+			memory += "\nCOMPLEX DESKTOP BUILD CONTRACT: Scope size is not a reason to refuse, summarize, outline, or return a placeholder. Implement a compact but operational version now. Use concise reusable classes and data tables. For a Windows media explorer, include a responsive background recursive scanner, image/video/audio filters, sortable details, thumbnail loading, Windows Open/Open With/Open File Location actions, cancellation and progress, plus the requested GPU/OpenGL view with a graceful dependency fallback. Optional packages may be imported conditionally, but every core control must work."
 		show_artifact_build_monitor.call_deferred()
 		if not artifact_retry_in_progress and artifact_repair_target_path.is_empty():
 			active_artifact_request = request_text
@@ -3647,13 +3648,19 @@ func send_message() -> void:
 			if not artifact_repair_target_path.is_empty():
 				messages.append({"role": "user", "content": "The previous proposed revision was rejected and was NOT saved. Work from the complete attached working source again. Apply the requested changes without simplifying, renaming away, or discarding its existing classes, controls, and behaviors. Correct every validation failure listed in the system instructions. Return the entire validated replacement in exactly one correctly labeled Markdown code fence, with no prose."})
 			else:
-				messages.append({"role": "user", "content": "The previous draft was truncated and has been discarded. Start over and return the complete compact source file now in exactly one correctly labeled Markdown code fence. Include every feature from my request. Output no prose, no partial draft, and do not stop after imports or the constructor."})
+				var generation_repair_strategies: Array[String] = [
+					"The previous draft was rejected and discarded. Build the operational compact application from scratch. Start with real imports, classes, UI, worker, and handlers immediately; do not discuss scope or feasibility.",
+					"The prior repair repeated an incomplete response. Use a simpler architecture and concise reusable helpers, but implement every required behavior. Optional dependencies need graceful fallbacks, never omission or explanation.",
+					"This is the final internal generation repair. Return only executable source. Replace every description with real code, keep the UI responsive, and finish all handlers and the entry point before closing the single code fence."
+				]
+				var generation_repair_strategy: String = generation_repair_strategies[clampi(artifact_auto_retry_count - 1, 0, 2)]
+				messages.append({"role": "user", "content": generation_repair_strategy + " Include every feature from the original request. Output no prose, placeholder comments, partial draft, setup guide, or claim that the project is beyond scope."})
 		else:
 			messages.append({"role": "user", "content": "Build it now. Do not acknowledge with words such as 'Sure' and do not describe what you might create. Your answer is valid only if it contains the complete runnable implementation in one correctly labeled code fence, with no placeholders, simulated behavior, random stand-ins, pass-only handlers, nested fences, split fragments, or invented repetitive properties. Every button and requested feature must call a real implementation. Keep the implementation compact enough to finish inside this response: prefer concise data-driven code over repetition, omit commentary, and never end midway through a statement or function."})
 	# Queue the complete request once. Preflight may reload the model, but must
 	# never call send_message() again or append the user turn a second time.
 	context_protected_tail_count = maxi(1, messages.size() - protected_tail_start)
-	var request_temperature := maxf(float(settings.temperature), 0.35) if artifact_retry_in_progress else float(settings.temperature)
+	var request_temperature := maxf(float(settings.temperature), 0.35 + 0.08 * artifact_auto_retry_count) if artifact_retry_in_progress else float(settings.temperature)
 	var humor_turn := bool(settings.get("humor_enabled", true)) and not code_mode and not command_center_turn and is_humor_request(request_text)
 	if humor_turn and not live_voice_turn:
 		request_temperature = maxf(request_temperature, 0.72)
@@ -5981,9 +5988,11 @@ func finish_generation() -> void:
 		artifact_failures.append("the proposed revision failed source validation: %s" % str(proposed_revision_validation.get("detail", "validation failed")).left(500))
 	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_is_comment_outline or artifact_complex_too_small or artifact_media_missing_scan or artifact_media_missing_worker or artifact_media_missing_filters or artifact_media_missing_opengl or artifact_media_missing_shell_actions or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged or artifact_revision_severely_reduced or artifact_revision_invalid):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
-		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
+		# Incomplete generation and runtime validation are separate repair stages.
+		# A refused/placeholder draft needs several clean model passes without using
+		# up the later syntax/runtime auto-fix allowance or interrupting the user.
+		if artifact_auto_retry_count < 3 and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
 			artifact_auto_retry_count += 1
-			artifact_total_retry_count += 1
 			artifact_partial_response = cleaned
 			active_artifact_builder_mode = false
 			active_artifact_language = ""
@@ -6001,15 +6010,15 @@ func finish_generation() -> void:
 			send_button.disabled = false
 			stop_button.disabled = true
 			set_microphone_available(true)
-			set_status("REBUILDING INCOMPLETE FILE • FINAL RETRY", colors.amber)
-			set_artifact_monitor_phase("INCOMPLETE DRAFT • FINAL RETRY", "The first response was incomplete. SAM will try once more, then stop for manual review.", 0)
-			show_toast("Incomplete draft discarded • one final rebuild attempt")
+			set_status("REPAIRING INCOMPLETE BUILD • ATTEMPT %d OF 3" % artifact_auto_retry_count, colors.amber)
+			set_artifact_monitor_phase("REPAIRING INCOMPLETE BUILD • %d/3" % artifact_auto_retry_count, "SAM rejected the draft and is correcting the missing implementation inside the same build job.", 0)
+			publish_builder_cat_telemetry("generation_repair", retry_corrections, 0, {"has_error": true, "validation_failures": artifact_failures, "source_excerpt": builder_source_excerpt(artifact_partial_response)})
 			call_deferred("send_message")
 			return
 		var failure_detail := "\n• ".join(artifact_failures)
 		if failure_detail.is_empty():
 			failure_detail = "the generated source failed SAM's safety and completeness checks"
-		cleaned = "BUILD STOPPED — SAM rejected the generated draft after the automatic rebuild because it was still incomplete. Nothing was saved or executed.\n\nMissing or invalid:\n• %s\n\nThe original request is preserved. Press Transmit to try again; SAM will build a fresh complete file." % failure_detail
+		cleaned = "BUILD PAUSED — SAM protected you from an incomplete generated draft after 3 automatic generation repairs. Nothing incomplete was saved or executed.\n\nStill missing or invalid:\n• %s\n\nThe original request and failure evidence are preserved. Use CONTINUE AUTO-REPAIR to begin another corrected repair cycle without retyping or resending the request manually." % failure_detail
 		artifact_build_rejected = true
 		response_text = cleaned
 		render_buffer = ""
@@ -8257,7 +8266,7 @@ func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: i
 		if artifact_validation_retry_count > 0:
 			attempt_text = " • AUTO-FIX %d/3" % artifact_validation_retry_count
 		elif artifact_auto_retry_count > 0:
-			attempt_text = " • REBUILD %d/1" % artifact_auto_retry_count
+			attempt_text = " • GENERATION REPAIR %d/3" % artifact_auto_retry_count
 		artifact_monitor_label.text = "BUILDING COMPLETE FILE%s" % attempt_text
 	if is_instance_valid(artifact_monitor_detail):
 		artifact_monitor_detail.text = "%d characters • %d lines • about %d of %d output tokens" % [chars, lines, approximate_tokens, budget]
@@ -8311,7 +8320,7 @@ func publish_builder_cat_telemetry(phase: String, detail: String, percent: int, 
 		"language": active_artifact_language,
 		"auto_fix_attempt": artifact_validation_retry_count,
 		"rebuild_attempt": artifact_auto_retry_count,
-		"total_retry_count": artifact_total_retry_count,
+		"total_retry_count": artifact_auto_retry_count + artifact_total_retry_count,
 		"repairing_existing_app": not artifact_repair_target_path.is_empty(),
 		"target_file": artifact_repair_target_path,
 		"request_summary": active_artifact_request.left(800)
@@ -8701,12 +8710,17 @@ func show_artifact_failure_dialog(detail: String) -> void:
 	dialog.dialog_text = detail
 	dialog.ok_button_text = "RETURN TO CHAT"
 	dialog.min_size = Vector2i(680, 390)
-	dialog.add_button("PUT ORIGINAL REQUEST IN COMPOSER", true, "retry")
+	dialog.add_button("CONTINUE AUTO-REPAIR", true, "retry")
 	dialog.custom_action.connect(func(action: StringName):
 		if action == &"retry":
+			artifact_retry_corrections = detail.left(5000)
+			artifact_auto_retry_count = 0
+			artifact_retry_in_progress = true
 			input_box.text = artifact_repair_prompt if not artifact_repair_prompt.is_empty() else active_artifact_request
-			input_box.grab_focus()
-			dialog.queue_free())
+			artifact_build_confirmed_once = true
+			dialog.queue_free()
+			set_status("CONTINUING AUTOMATIC BUILD REPAIR", colors.amber)
+			call_deferred("send_message"))
 	dialog.confirmed.connect(dialog.queue_free)
 	add_child(dialog)
 	apply_theme_recursive(dialog)
