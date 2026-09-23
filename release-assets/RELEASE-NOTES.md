@@ -1,4 +1,15 @@
-# SAM-AI v1.4.1
+# SAM-AI v1.4.2 Beta 1
+
+## Fixed in v1.4.2 Beta 1
+
+- Makes Security Center monitoring, Network Guard, and SAM-managed Windows Firewall actions explicit opt-ins. Upgrading beta users are migrated to the safe disabled state once; Windows Firewall itself is never disabled.
+- Keeps the installed CUDA llama.cpp runtime selected after restarts and after vision analysis, and removes stale server processes that could receive requests for the wrong model.
+- Restores the primary CUDA coder before screenshot-assisted app repair continues and preserves the original request and visual diagnosis across that handoff.
+- Reports the actual GPU or CPU inference mode in slow first-token notices instead of always warning about CPU mode.
+- Improves Cat Builder with three reliable zoom sizes, a full-screen view, correctly framed scenery, icon controls, and large-view Stop/Restart actions.
+- Adds deterministic repair for missing Python standard-library imports such as `ctypes`.
+
+## Previous release: v1.4.1
 
 ## Fixed in v1.4.1
 

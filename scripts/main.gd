@@ -113,6 +113,9 @@ var settings := {
 	"visual_module_preference": "auto",
 	"ai_visual_planning_enabled": true,
 	"generation_fallback_enabled": true,
+	"security_center_enabled": false,
+	"firewall_controls_enabled": false,
+	"security_opt_in_migrated": false,
 	"network_guard_enabled": false,
 	"network_trusted_apps": [],
 	"network_blocked_apps": []
@@ -561,6 +564,8 @@ var security_snapshot_output := ""
 var security_process_tree: Tree
 var security_connection_tree: Tree
 var security_guard_label: Label
+var security_center_button: Button
+var firewall_controls_button: Button
 var security_selected_pid := -1
 var security_selected_name := ""
 var security_selected_path := ""
@@ -600,6 +605,7 @@ func _ready() -> void:
 	# We stage shutdown ourselves so llama.cpp can release CUDA before Godot tears
 	# down the window/rendering device.  Closing both at once can stall Windows.
 	get_tree().auto_accept_quit = false
+	$Page/Header/Brand.text = "SAM-AI v1.4.2 beta 1 by forge & Makazhan"
 	var intro_completed := bool(ProjectSettings.get_setting("sam_ai/intro_completed", false))
 	show_startup_screen()
 	if intro_completed:
@@ -3048,7 +3054,7 @@ func _process(delta: float) -> void:
 	poll_supervised_run_jobs()
 	poll_security_audit()
 	poll_security_snapshot()
-	if bool(settings.get("network_guard_enabled", false)) and Time.get_ticks_msec() >= security_refresh_due_ms:
+	if bool(settings.get("security_center_enabled", false)) and bool(settings.get("network_guard_enabled", false)) and Time.get_ticks_msec() >= security_refresh_due_ms:
 		security_refresh_due_ms = Time.get_ticks_msec() + 4000
 		refresh_security_snapshot()
 	if is_instance_valid(stats_report):
@@ -5810,7 +5816,7 @@ func poll_stream() -> void:
 			slow_inference_notice_shown = true
 			var mode_text := "GPU" if accelerated else "CPU / PAGED MEMORY"
 			set_status("MODEL WORKING • %s • %ds" % [mode_text, first_token_elapsed / 1000], colors.amber)
-			show_toast("The engine is still responding • large CPU models can take several minutes for the first token")
+			show_toast("The engine is still responding • %s inference can take time with a large model and context" % mode_text)
 			log_line("INFERENCE", "Waiting for first token in %s mode; watchdog extended to %d seconds" % [mode_text, first_token_limit / 1000])
 		if first_token_elapsed > first_token_limit:
 			fail_generation("The local model produced no first token within %d minutes. The engine remained open, but this model/runtime combination is too slow or stalled. Try the bundled 3B starter model, lower the context size, or install the matching CUDA runtime in Modules." % maxi(1, first_token_limit / 60000) + engine_log_failure_suffix())
@@ -13481,6 +13487,10 @@ func setup_security_center() -> void:
 	title.add_theme_font_size_override("font_size", 21)
 	title.add_theme_color_override("font_color", colors.cyan)
 	header.add_child(title)
+	security_center_button = make_button("ENABLE SECURITY CENTER", toggle_security_center, colors.green)
+	header.add_child(security_center_button)
+	firewall_controls_button = make_button("ENABLE SAM FIREWALL CONTROLS", toggle_firewall_controls, colors.amber)
+	header.add_child(firewall_controls_button)
 	header.add_child(make_button("↻ REFRESH LIVE VIEW", refresh_security_snapshot, colors.green))
 	header.add_child(make_button("✓ VERIFY ALL SIGNATURES", func(): refresh_security_snapshot(true), colors.cyan))
 	header.add_child(make_button("🛡 RUN READ-ONLY AUDIT", run_security_audit, colors.green))
@@ -13594,7 +13604,9 @@ func setup_security_center() -> void:
 	apply_theme_recursive(page)
 	setup_security_context_menu()
 	setup_security_policy_tab()
-	refresh_security_snapshot.call_deferred()
+	refresh_security_controls_ui()
+	if bool(settings.get("security_center_enabled", false)):
+		refresh_security_snapshot.call_deferred()
 
 func setup_security_policy_tab() -> void:
 	var tabs: TabContainer = $Page/Tabs
@@ -13659,13 +13671,46 @@ func refresh_network_guard_ui() -> void:
 		network_guard_button.text = "DISABLE NETWORK GUARD" if enabled else "ENABLE NETWORK GUARD"
 	refresh_network_guard_header()
 
+func refresh_security_controls_ui() -> void:
+	var center_enabled := bool(settings.get("security_center_enabled", false))
+	var firewall_enabled := bool(settings.get("firewall_controls_enabled", false))
+	if is_instance_valid(security_center_button):
+		security_center_button.text = "DISABLE SECURITY CENTER" if center_enabled else "ENABLE SECURITY CENTER"
+	if is_instance_valid(firewall_controls_button):
+		firewall_controls_button.text = "DISABLE SAM FIREWALL CONTROLS" if firewall_enabled else "ENABLE SAM FIREWALL CONTROLS"
+	refresh_network_guard_ui()
+
+func toggle_security_center() -> void:
+	var enabled := not bool(settings.get("security_center_enabled", false))
+	settings.security_center_enabled = enabled
+	if not enabled:
+		settings.network_guard_enabled = false
+	save_json(SETTINGS_FILE, settings)
+	refresh_security_controls_ui()
+	if enabled:
+		refresh_security_snapshot()
+	show_toast("Security Center monitoring enabled" if enabled else "Security Center monitoring disabled")
+
+func toggle_firewall_controls() -> void:
+	var enabled := not bool(settings.get("firewall_controls_enabled", false))
+	settings.firewall_controls_enabled = enabled
+	save_json(SETTINGS_FILE, settings)
+	refresh_security_controls_ui()
+	show_toast("SAM firewall controls enabled • Windows approval is still required per change" if enabled else "SAM firewall controls disabled • Windows Firewall was not changed")
+
 func toggle_network_guard() -> void:
+	if not bool(settings.get("security_center_enabled", false)):
+		show_toast("Enable Security Center monitoring first")
+		return
 	settings.network_guard_enabled = not bool(settings.get("network_guard_enabled", false))
 	save_json(SETTINGS_FILE, settings)
 	refresh_network_guard_ui()
 	show_toast("SAM Network Guard enabled • click its header badge any time" if bool(settings.network_guard_enabled) else "SAM Network Guard display disabled • Windows Firewall settings were not changed")
 
 func refresh_security_snapshot(verify_signatures := false) -> void:
+	if not bool(settings.get("security_center_enabled", false)):
+		show_toast("Security Center monitoring is off • enable it in this tab first")
+		return
 	if OS.get_name() != "Windows":
 		show_toast("The live security console currently supports Windows")
 		return
@@ -14299,6 +14344,9 @@ func request_process_firewall_change(block: bool) -> void:
 	dialog.popup_centered(Vector2i(760, 390))
 
 func run_firewall_admin_action(action: String, app_name := "", app_path := "", rule_name := "") -> void:
+	if not bool(settings.get("firewall_controls_enabled", false)) and action != "lockdown_off":
+		show_toast("SAM firewall controls are off • enable them in Security Center first")
+		return
 	var script := ProjectSettings.globalize_path("res://tools/sam_firewall_action.ps1")
 	var safe_script := script.replace("'", "''")
 	var safe_name := app_name.replace("'", "''")
@@ -14502,7 +14550,7 @@ func setup_about_tab() -> void:
 	info.append_text("SAM-AI is a local desktop AI workspace for private chat, code assistance, persistent user-controlled MemoryCore, image understanding, file analysis, speech recognition, and natural local voice. Your configured models run on your own computer through llama.cpp.\n\n")
 	info.append_text("[color=#8292ad]CREATED BY[/color]\n[b]Steadyforge[/b] from [b]Astroblitz Creations[/b] & [b]Makazhan[/b]\n\n")
 	info.append_text("[color=#8292ad]DESIGN PRINCIPLES[/color]\n• Private and local by default\n• User-owned models, memory, and conversations\n• Transparent performance and debug information\n• Useful on both gaming PCs and lower-end hardware with appropriately sized models\n\n")
-	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.4.1 • Windows desktop edition[/color]")
+	info.append_text("[color=#8292ad]SUPPORT DEVELOPMENT[/color]\nIf SAM-AI is useful to you, you can support continued development through Buy Me a Coffee.\n[url=https://buymeacoffee.com/astroblitzcreations][color=#4deeea][u]https://buymeacoffee.com/astroblitzcreations[/u][/color][/url]\n\n[color=#8292ad]Version 1.4.2 beta 1 • Windows desktop edition[/color]")
 	info.meta_clicked.connect(func(meta: Variant):
 		var target := str(meta)
 		if target.begins_with("https://buymeacoffee.com/"):
@@ -15285,7 +15333,7 @@ func setup_privacy_indicator() -> void:
 func refresh_network_guard_header() -> void:
 	if not is_instance_valid(network_guard_header_button):
 		return
-	var enabled := bool(settings.get("network_guard_enabled", false))
+	var enabled := bool(settings.get("security_center_enabled", false)) and bool(settings.get("network_guard_enabled", false))
 	network_guard_header_button.visible = enabled
 	network_guard_header_button.text = "🛡 GUARD %d BLOCKED" % security_blocked_rules
 	network_guard_header_button.add_theme_color_override("font_color", colors.green)
@@ -15294,7 +15342,8 @@ func open_network_guard_tab() -> void:
 	var tab := $Page/Tabs.get_node_or_null("Security Center")
 	if tab != null:
 		$Page/Tabs.current_tab = tab.get_index()
-		refresh_security_snapshot()
+		if bool(settings.get("security_center_enabled", false)):
+			refresh_security_snapshot()
 
 func toggle_microphone_privacy() -> void:
 	var muting := not bool(settings.get("microphone_muted", false))
@@ -17133,6 +17182,15 @@ func load_settings() -> void:
 	var loaded = load_json(SETTINGS_FILE)
 	if loaded is Dictionary:
 		settings.merge(loaded, true)
+		# Security monitoring and SAM-authored firewall mutations are explicit
+		# opt-ins. Reset legacy beta installs once because those builds could leave
+		# Network Guard enabled without these separate consent switches.
+		if not bool(loaded.get("security_opt_in_migrated", false)):
+			settings.security_center_enabled = false
+			settings.firewall_controls_enabled = false
+			settings.network_guard_enabled = false
+			settings.security_opt_in_migrated = true
+			save_json(SETTINGS_FILE, settings)
 		# Knowledge capture is transcript-only by default. This one-time migration
 		# corrects builds that briefly defaulted to retaining every source recording.
 		if not bool(loaded.get("knowledge_transcript_only_migrated", false)):
