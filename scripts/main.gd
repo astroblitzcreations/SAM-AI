@@ -204,6 +204,10 @@ var artifact_monitor_compact_progress: ProgressBar
 var artifact_monitor_compact_label: Label
 var artifact_monitor_cat: Control
 var artifact_monitor_compact_size_index := 0
+var artifact_monitor_zoom_out_button: Button
+var artifact_monitor_zoom_in_button: Button
+var artifact_monitor_fullscreen_button: Button
+var artifact_monitor_build_actions: HBoxContainer
 var artifact_monitor_user_minimized := false
 var builder_cat_telemetry: Dictionary = {}
 var builder_cat_telemetry_sequence := 0
@@ -8398,14 +8402,27 @@ func show_artifact_compact_monitor() -> void:
 	artifact_monitor_compact_progress.custom_minimum_size = Vector2(100, 14)
 	style_visual_progress_bar(artifact_monitor_compact_progress)
 	row.add_child(artifact_monitor_compact_progress)
-	var resize := Button.new()
-	resize.text = "SIZE +"
-	resize.tooltip_text = "Cycle the complete builder card through normal, large, and extra-large sizes"
-	resize.pressed.connect(func():
-		artifact_monitor_compact_size_index = (artifact_monitor_compact_size_index + 1) % 3
-		resize.text = ["SIZE +", "SIZE ++", "SIZE − RESET"][artifact_monitor_compact_size_index]
+	artifact_monitor_zoom_out_button = Button.new()
+	artifact_monitor_zoom_out_button.text = "−"
+	artifact_monitor_zoom_out_button.tooltip_text = "Zoom out"
+	artifact_monitor_zoom_out_button.pressed.connect(func():
+		artifact_monitor_compact_size_index = maxi(0, artifact_monitor_compact_size_index - 1)
 		resize_artifact_compact_monitor())
-	row.add_child(resize)
+	row.add_child(artifact_monitor_zoom_out_button)
+	artifact_monitor_zoom_in_button = Button.new()
+	artifact_monitor_zoom_in_button.text = "+"
+	artifact_monitor_zoom_in_button.tooltip_text = "Zoom in through three useful card sizes"
+	artifact_monitor_zoom_in_button.pressed.connect(func():
+		artifact_monitor_compact_size_index = mini(2, artifact_monitor_compact_size_index + 1)
+		resize_artifact_compact_monitor())
+	row.add_child(artifact_monitor_zoom_in_button)
+	artifact_monitor_fullscreen_button = Button.new()
+	artifact_monitor_fullscreen_button.text = "⛶"
+	artifact_monitor_fullscreen_button.tooltip_text = "Open full-screen Cat Builder"
+	artifact_monitor_fullscreen_button.pressed.connect(func():
+		artifact_monitor_compact_size_index = 0 if artifact_monitor_compact_size_index == 3 else 3
+		resize_artifact_compact_monitor())
+	row.add_child(artifact_monitor_fullscreen_button)
 	var restore := Button.new()
 	restore.text = "RESTORE"
 	restore.pressed.connect(restore_artifact_build_monitor)
@@ -8413,6 +8430,25 @@ func show_artifact_compact_monitor() -> void:
 	artifact_monitor_cat = BUILDER_CAT_SCRIPT.new() as Control
 	artifact_monitor_cat.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	compact_stack.add_child(artifact_monitor_cat)
+	artifact_monitor_build_actions = HBoxContainer.new()
+	artifact_monitor_build_actions.add_theme_constant_override("separation", 8)
+	artifact_monitor_build_actions.visible = false
+	compact_stack.add_child(artifact_monitor_build_actions)
+	var restart_build := Button.new()
+	restart_build.text = "↺ RESTART BUILD"
+	restart_build.tooltip_text = "Stop this attempt and restart from the preserved original request"
+	restart_build.pressed.connect(restart_active_artifact_build)
+	restart_build.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	artifact_monitor_build_actions.add_child(restart_build)
+	var stop_build := Button.new()
+	stop_build.text = "■ STOP BUILD"
+	stop_build.tooltip_text = "Stop the active build"
+	stop_build.pressed.connect(func():
+		stop_generation()
+		close_artifact_build_monitor()
+		set_status("BUILD STOPPED BY USER", colors.amber))
+	stop_build.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	artifact_monitor_build_actions.add_child(stop_build)
 	if not builder_cat_telemetry.is_empty():
 		artifact_monitor_cat.set_meta("build_telemetry", builder_cat_telemetry.duplicate(true))
 		if artifact_monitor_cat.has_method("set_build_telemetry"):
@@ -8424,19 +8460,48 @@ func show_artifact_compact_monitor() -> void:
 func resize_artifact_compact_monitor() -> void:
 	if not is_instance_valid(artifact_monitor_compact):
 		return
-	var sizes := [Vector2(420, 112), Vector2(720, 260), Vector2(1000, 390)]
-	var target_size: Vector2 = sizes[clampi(artifact_monitor_compact_size_index, 0, sizes.size() - 1)]
+	var safe_level := clampi(artifact_monitor_compact_size_index, 0, 3)
+	var viewport_size := get_viewport_rect().size
+	var sizes := [Vector2(440, 130), Vector2(720, 300), Vector2(1040, 500)]
+	var target_size: Vector2 = Vector2(maxf(640.0, viewport_size.x - 36.0), maxf(420.0, viewport_size.y - 110.0)) if safe_level == 3 else sizes[safe_level]
 	# Pin the card with explicit right/top offsets. Using Control.position with
 	# right-side anchors can turn a negative offset into a negative absolute
 	# position, which made the minimized monitor disappear on wide windows.
 	artifact_monitor_compact.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	artifact_monitor_compact.offset_left = -target_size.x - 18.0
 	artifact_monitor_compact.offset_right = -18.0
-	artifact_monitor_compact.offset_top = 74.0
-	artifact_monitor_compact.offset_bottom = 74.0 + target_size.y
+	artifact_monitor_compact.offset_top = 64.0 if safe_level == 3 else 74.0
+	artifact_monitor_compact.offset_bottom = artifact_monitor_compact.offset_top + target_size.y
+	if is_instance_valid(artifact_monitor_zoom_out_button):
+		artifact_monitor_zoom_out_button.disabled = safe_level == 0
+	if is_instance_valid(artifact_monitor_zoom_in_button):
+		artifact_monitor_zoom_in_button.disabled = safe_level >= 2
+	if is_instance_valid(artifact_monitor_fullscreen_button):
+		artifact_monitor_fullscreen_button.text = "⤢" if safe_level == 3 else "⛶"
+		artifact_monitor_fullscreen_button.tooltip_text = "Exit full-screen Cat Builder" if safe_level == 3 else "Open full-screen Cat Builder"
+	if is_instance_valid(artifact_monitor_build_actions):
+		artifact_monitor_build_actions.visible = safe_level >= 2
 	if is_instance_valid(artifact_monitor_cat):
-		artifact_monitor_cat.call("set_display_size_level", artifact_monitor_compact_size_index)
+		artifact_monitor_cat.call("set_display_size_level", safe_level)
 	artifact_monitor_compact.move_to_front()
+
+func restart_active_artifact_build() -> void:
+	var request := active_artifact_request if not active_artifact_request.is_empty() else artifact_repair_prompt
+	if request.strip_edges().is_empty():
+		show_toast("No preserved build request is available to restart")
+		return
+	stop_generation()
+	artifact_auto_retry_count = 0
+	artifact_empty_retry_count = 0
+	artifact_validation_retry_count = 0
+	artifact_retry_in_progress = false
+	artifact_retry_corrections = ""
+	artifact_build_confirmed_once = true
+	artifact_monitor_user_minimized = true
+	input_box.text = request
+	set_status("RESTARTING BUILD FROM ORIGINAL REQUEST", colors.amber)
+	set_artifact_monitor_phase("RESTARTING BUILD", "The previous attempt was stopped. SAM is restarting from the preserved original request.", 0)
+	call_deferred("send_message")
 
 func hide_artifact_compact_monitor() -> void:
 	if is_instance_valid(artifact_monitor_compact):
@@ -8551,6 +8616,10 @@ func close_artifact_build_monitor() -> void:
 	artifact_monitor_compact_progress = null
 	artifact_monitor_compact_label = null
 	artifact_monitor_cat = null
+	artifact_monitor_zoom_out_button = null
+	artifact_monitor_zoom_in_button = null
+	artifact_monitor_fullscreen_button = null
+	artifact_monitor_build_actions = null
 	artifact_monitor_compact_size_index = 0
 	artifact_monitor_user_minimized = false
 
@@ -10382,9 +10451,10 @@ func try_deterministic_python_repair(path: String, detail: String) -> bool:
 		if runtime_end > runtime_start:
 			var missing_name := detail.substr(runtime_start, runtime_end - runtime_start)
 			var default_value := python_default_for_missing_name(missing_name)
+			var standard_module_imports := {"ctypes": "import ctypes", "types": "import types", "threading": "import threading", "os": "import os", "sys": "import sys", "json": "import json", "time": "import time", "subprocess": "import subprocess"}
 			var repair_key := path + "::" + missing_name
-			if not default_value.is_empty() and not bool(automatic_name_repairs.get(repair_key, false)):
-				additions.append("%s = %s" % [missing_name, default_value])
+			if (standard_module_imports.has(missing_name) or not default_value.is_empty()) and not bool(automatic_name_repairs.get(repair_key, false)):
+				additions.append(str(standard_module_imports.get(missing_name, "%s = %s" % [missing_name, default_value])))
 				repaired_names.append(missing_name)
 				automatic_name_repairs[repair_key] = true
 	# Static validation reports can contain non-color state names too.

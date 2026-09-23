@@ -45,6 +45,8 @@ var snippet_label: Label
 var error_label: Label
 var text_column: VBoxContainer
 var builder_viewport: SubViewport
+var builder_viewport_container: SubViewportContainer
+var builder_camera: Camera3D
 var build_telemetry: Dictionary = {}
 var telemetry_history: Array[Dictionary] = []
 var telemetry_sequence := -1
@@ -77,7 +79,7 @@ func build_scene() -> void:
 	text_column.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	layout.add_child(text_column)
 	build_labels()
-	var builder_viewport_container := SubViewportContainer.new()
+	builder_viewport_container = SubViewportContainer.new()
 	builder_viewport_container.stretch = true
 	builder_viewport_container.custom_minimum_size = Vector2(220, 68)
 	builder_viewport_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -88,6 +90,7 @@ func build_scene() -> void:
 	builder_viewport.size = Vector2i(440, 136)
 	builder_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	builder_viewport_container.add_child(builder_viewport)
+	builder_viewport_container.resized.connect(_update_viewport_layout)
 	var world := Node3D.new()
 	builder_viewport.add_child(world)
 	var environment := WorldEnvironment.new()
@@ -99,14 +102,15 @@ func build_scene() -> void:
 	scene_environment.ambient_light_energy = 0.72
 	environment.environment = scene_environment
 	world.add_child(environment)
-	var camera := Camera3D.new()
+	builder_camera = Camera3D.new()
 	# A straight-on orthographic camera makes this a true side-scroller. There
 	# is no perspective axis for the cat to appear to run into.
-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.size = 2.15
-	camera.position = Vector3(0.0, 0.55, 5.0)
-	camera.look_at_from_position(camera.position, Vector3(0.0, 0.55, 0.0), Vector3.UP)
-	world.add_child(camera)
+	builder_camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	builder_camera.size = 2.15
+	builder_camera.position = Vector3(0.0, 0.55, 5.0)
+	builder_camera.look_at_from_position(builder_camera.position, Vector3(0.0, 0.55, 0.0), Vector3.UP)
+	world.add_child(builder_camera)
+	call_deferred("_update_viewport_layout")
 	day_light = DirectionalLight3D.new()
 	day_light.rotation_degrees = Vector3(-35, -25, 0)
 	day_light.light_color = Color("#bdefff")
@@ -380,19 +384,35 @@ func build_labels() -> void:
 func set_display_size_level(level: int) -> void:
 	if not is_instance_valid(progress_label) or not is_instance_valid(state_label) or not is_instance_valid(text_column):
 		return
-	var safe_level := clampi(level, 0, 2)
+	var safe_level := clampi(level, 0, 3)
 	display_size_level = safe_level
-	text_column.custom_minimum_size.x = [132.0, 250.0, 360.0][safe_level]
-	progress_label.add_theme_font_size_override("font_size", [12, 18, 24][safe_level])
-	state_label.add_theme_font_size_override("font_size", [10, 15, 20][safe_level])
-	phase_label.add_theme_font_size_override("font_size", [8, 12, 15][safe_level])
-	stats_label.add_theme_font_size_override("font_size", [8, 11, 14][safe_level])
-	error_label.add_theme_font_size_override("font_size", [8, 11, 14][safe_level])
-	snippet_label.add_theme_font_size_override("font_size", [8, 10, 12][safe_level])
+	text_column.custom_minimum_size.x = [132.0, 220.0, 310.0, 380.0][safe_level]
+	progress_label.add_theme_font_size_override("font_size", [12, 17, 21, 26][safe_level])
+	state_label.add_theme_font_size_override("font_size", [10, 14, 17, 21][safe_level])
+	phase_label.add_theme_font_size_override("font_size", [8, 11, 13, 16][safe_level])
+	stats_label.add_theme_font_size_override("font_size", [8, 10, 12, 14][safe_level])
+	error_label.add_theme_font_size_override("font_size", [8, 10, 12, 14][safe_level])
+	snippet_label.add_theme_font_size_override("font_size", [8, 9, 11, 13][safe_level])
 	stats_label.visible = safe_level >= 1
 	snippet_label.visible = safe_level >= 2 and not str(build_telemetry.get("source_excerpt", "")).is_empty()
 	error_label.visible = bool(build_telemetry.get("has_error", false))
 	refresh_telemetry_labels()
+	call_deferred("_update_viewport_layout")
+
+func _update_viewport_layout() -> void:
+	if not is_instance_valid(builder_viewport) or not is_instance_valid(builder_viewport_container):
+		return
+	var visible_size := builder_viewport_container.size
+	if visible_size.x < 2.0 or visible_size.y < 2.0:
+		return
+	# Render at the real card aspect ratio instead of stretching the original
+	# 440x136 texture. This keeps the ground, house, supplies, and cat framed at
+	# every zoom level, including full-screen.
+	builder_viewport.size = Vector2i(maxi(320, int(visible_size.x)), maxi(120, int(visible_size.y)))
+	if is_instance_valid(builder_camera):
+		builder_camera.size = [2.05, 2.15, 2.25, 2.35][clampi(display_size_level, 0, 3)]
+		builder_camera.position = Vector3(0.0, 0.58, 5.0)
+		builder_camera.look_at_from_position(builder_camera.position, Vector3(0.0, 0.58, 0.0), Vector3.UP)
 
 func set_build_telemetry(event: Dictionary) -> void:
 	var sequence := int(event.get("sequence", telemetry_sequence + 1))
