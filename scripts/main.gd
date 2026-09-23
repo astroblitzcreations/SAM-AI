@@ -3544,7 +3544,12 @@ func send_message() -> void:
 		vault_turn_suffix = "\n\n[AUTHORITATIVE MEMORYCORE MATCHES]\n%s\n[RESPONSE REQUIREMENT] Use these explicit user-supplied facts to answer the question." % authoritative_context
 	if is_knowledge_provenance_question(user_text):
 		vault_turn_suffix += "\n\n[SOURCE TRACE REQUEST]\nThe user is asking where the immediately preceding answer came from. The preceding question was: %s\nState precisely which supplied sources are present above: MemoryCore, KnowledgeVault, both, or neither. If neither has a relevant match, say the answer came from the local model's existing knowledge and conversation context. Do not answer a different remembered topic. Do not mention an image and do not invoke visual analysis." % [source_trace_question if not source_trace_question.is_empty() else "No preceding substantive question was found."]
-	var code_mode := is_code_request(request_text) or attached_file_kind == "code"
+	# During Ask SAM for Ideas, source is evidence to inspect rather than a request
+	# to emit another copy of the program. Keeping Code Engineering mode active
+	# here caused some models to regenerate the same app instead of returning an
+	# editable, app-specific revision plan.
+	var idea_review_turn := enhancement_idea_review_pending or build_idea_review_pending
+	var code_mode := (is_code_request(request_text) or attached_file_kind == "code") and not idea_review_turn
 	var detected_language := detect_code_language(request_text, attached_file_path)
 	# Command Center owns its own result validation/extraction. Do not route its
 	# short shell plans through the general Artifact Builder retry heuristics.
@@ -5892,6 +5897,9 @@ func finish_generation() -> void:
 	var request_lower := active_artifact_request.to_lower()
 	var game_request := request_lower.contains("game")
 	var game_source := cleaned_lower
+	var proposed_revision_source := extract_first_fenced_code(cleaned) if not completed_repair_path.is_empty() else ""
+	var existing_revision_source := FileAccess.get_file_as_string(completed_repair_path) if not completed_repair_path.is_empty() and FileAccess.file_exists(completed_repair_path) else ""
+	var artifact_revision_unchanged := not proposed_revision_source.is_empty() and not existing_revision_source.is_empty() and proposed_revision_source.strip_edges() == existing_revision_source.strip_edges()
 	var artifact_game_missing_restart := game_request and (request_lower.contains("restart") or request_lower.contains("gameover") or request_lower.contains("game over")) and not (game_source.contains("reset_game") or game_source.contains("new_game") or game_source.contains("start_game"))
 	var artifact_game_missing_combat := game_request and (request_lower.contains("shoot") or request_lower.contains("attack") or request_lower.contains("enemies")) and not (game_source.contains("bullet") or game_source.contains("projectile") or game_source.contains("shot") or game_source.contains("attack"))
 	var artifact_game_missing_npcs := game_request and (request_lower.contains("people") or request_lower.contains("npc") or request_lower.contains("talk")) and not (game_source.contains("npc") or game_source.contains("dialog") or game_source.contains("story"))
@@ -5921,9 +5929,11 @@ func finish_generation() -> void:
 		artifact_failures.append("enterable building interiors were missing")
 	if artifact_game_missing_persistence:
 		artifact_failures.append("score/save persistence was missing")
-	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small):
+	if artifact_revision_unchanged:
+		artifact_failures.append("the revision was byte-for-byte unchanged and did not apply the requested edit or influence")
+	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
-		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and not active_artifact_request.is_empty():
+		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
 			artifact_auto_retry_count += 1
 			artifact_total_retry_count += 1
 			artifact_partial_response = cleaned
@@ -8638,10 +8648,23 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 		if extra.is_empty():
 			show_toast("Add an influence first")
 			return
+		var checkpoint := file_revision_backup(path, "before-result-influence")
+		if checkpoint.is_empty():
+			status.text = "Could not make the safety revision, so SAM refused to change the working file."
+			return
 		artifact_auto_fix_enabled = autofix.button_pressed
+		artifact_repair_target_path = path
+		artifact_repair_language = path.get_extension()
+		artifact_repair_prompt = "Revise the attached CURRENT WORKING source in place. The user's new influence is mandatory and must cause a real, user-visible source change. Preserve existing working features unless this influence explicitly changes them. Return exactly one complete corrected file in one fenced code block; no tutorial, placeholders, omitted sections, or unchanged copy. Before answering, compare the completed revision against the attached source and verify the requested difference is actually implemented. NEW BUILD INFLUENCE:\n\n%s" % extra
+		artifact_total_retry_count = 0
+		artifact_validation_retry_count = 0
+		artifact_auto_retry_count = 0
 		artifact_build_confirmed_once = true
-		input_box.text = active_artifact_request + "\n\nNEW BUILD INFLUENCE:\n" + extra
+		attach_file(path)
+		input_box.text = artifact_repair_prompt
 		dialog.queue_free()
+		set_status("INFLUENCE REVISION SAVED • SAM IS BUILDING", colors.amber)
+		show_toast("Current app attached • applying the new influence as a revision")
 		call_deferred("send_message"), colors.amber))
 	actions.add_child(make_button("CLOSE", dialog.queue_free, colors.muted))
 	add_child(dialog)
@@ -8754,7 +8777,7 @@ func show_artifact_enhancement_dialog(code_id: int, path: String, initial_reques
 			return
 		artifact_repair_target_path = path
 		artifact_repair_language = path.get_extension()
-		artifact_repair_prompt = "Edit the attached WORKING source in place. Preserve every existing working feature and control unless the user explicitly asks to change or remove it. Apply all requested fixes, edits, additions, removals, or improvements as one coherent revision. Fix directly related defects you find. Return exactly one complete corrected file in one fenced code block, with no tutorial, placeholders, omitted sections, or split files. Before answering, perform three internal passes: plan the smallest safe change, implement it, then check state transitions and runtime edge cases. Requested changes:\n\n%s" % addition
+		artifact_repair_prompt = "Edit the attached WORKING source in place. Preserve every existing working feature and control unless the user explicitly asks to change or remove it. Apply all requested fixes, edits, additions, removals, or improvements as one coherent revision. The requested change is mandatory and must produce a real user-visible or behavioral difference; never return the attached source unchanged. Fix directly related defects you find. Return exactly one complete corrected file in one fenced code block, with no tutorial, placeholders, omitted sections, or split files. Before answering, perform three internal passes: plan the smallest safe change, implement it, then compare against the attached source and verify the requested difference plus state transitions and runtime edge cases. Requested changes:\n\n%s" % addition
 		artifact_total_retry_count = 0
 		artifact_validation_retry_count = 0
 		artifact_auto_retry_count = 0
