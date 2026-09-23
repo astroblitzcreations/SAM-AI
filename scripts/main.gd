@@ -2976,13 +2976,27 @@ func stop_engine(cancel_active_request: bool = true) -> void:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(SERVER_PID_FILE))
 
 func recover_orphaned_server() -> void:
-	if not FileAccess.file_exists(SERVER_PID_FILE):
-		return
-	var old_pid := int(FileAccess.get_file_as_string(SERVER_PID_FILE))
-	if old_pid > 0 and OS.is_process_running(old_pid):
-		OS.kill(old_pid)
-		log_line("ENGINE", "Recovered and stopped orphan server PID %s" % old_pid)
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(SERVER_PID_FILE))
+	if FileAccess.file_exists(SERVER_PID_FILE):
+		var old_pid := int(FileAccess.get_file_as_string(SERVER_PID_FILE))
+		if old_pid > 0 and OS.is_process_running(old_pid):
+			OS.kill(old_pid)
+			log_line("ENGINE", "Recovered and stopped recorded orphan server PID %s" % old_pid)
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(SERVER_PID_FILE))
+	# A PID file records only the newest process. A crash or older build can leave
+	# additional llama-server instances bound to the same port through Windows'
+	# address-reuse behavior. Health checks then pass against one process while an
+	# image request lands on an older text-only process, producing a false missing-
+	# MMPROJ HTTP 500. Before every launch, stop only llama-server processes that
+	# actually own SAM's configured listening port. This does not touch other local
+	# model servers on different ports.
+	var cleanup_output: Array = []
+	var cleanup_script := "$p=%d; Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match ('(?:^|\\s)--port\\s+'+$p+'(?:\\s|$)') } | ForEach-Object { Write-Output $_.ProcessId; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" % int(settings.port)
+	var cleanup_code := OS.execute("powershell.exe", PackedStringArray(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", cleanup_script]), cleanup_output, true, false)
+	var cleaned_pids := " ".join(cleanup_output).strip_edges().replace("\r", " ").replace("\n", " ")
+	if not cleaned_pids.is_empty():
+		log_line("ENGINE", "Stopped stale llama-server listener(s) on port %d: %s" % [int(settings.port), cleaned_pids])
+	elif cleanup_code != 0:
+		log_line("ENGINE WARNING", "Could not inspect stale listeners on port %d (PowerShell exit %d)" % [int(settings.port), cleanup_code])
 
 func setting_text(key: String) -> String:
 	if key in ["port", "gpu_layers", "context_size", "max_tokens"]:
