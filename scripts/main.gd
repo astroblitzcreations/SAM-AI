@@ -169,6 +169,7 @@ var active_artifact_builder_mode := false
 var active_artifact_language := ""
 var active_artifact_request := ""
 var artifact_auto_retry_count := 0
+var artifact_empty_retry_count := 0
 var artifact_retry_in_progress := false
 var artifact_retry_corrections := ""
 var artifact_partial_response := ""
@@ -3574,6 +3575,7 @@ func send_message() -> void:
 		if not artifact_retry_in_progress and artifact_repair_target_path.is_empty():
 			active_artifact_request = request_text
 			artifact_auto_retry_count = 0
+			artifact_empty_retry_count = 0
 			artifact_retry_in_progress = false
 			artifact_partial_response = ""
 		code_mode = true
@@ -3611,7 +3613,12 @@ func send_message() -> void:
 	if code_mode and (request_text.to_lower().contains("fileaccess") or request_text.to_lower().contains("not declared")):
 		messages.append({"role": "user", "content": "Error: Identifier FileAccesssssss not declared. Code: return FileAccesssssss.get_file_as_string(path)"})
 		messages.append({"role": "assistant", "content": "The identifier is misspelled. Use FileAccess:\n```gdscript\nreturn FileAccess.get_file_as_string(path)\n```"})
-	var history_start := history.size() - 1 if command_center_turn else calculate_history_start(memory.length() + attached_file_text.length())
+	var compact_complex_repair := artifact_retry_in_progress and is_complex_desktop_artifact_request(active_artifact_request)
+	# The full original specification remains preserved in active_artifact_request
+	# and is still used by validation. Do not resend it on every complex recovery:
+	# smaller local models otherwise repeat the same refusal, then collapse to an
+	# empty response as the prompt grows across attempts.
+	var history_start := history.size() if compact_complex_repair else (history.size() - 1 if command_center_turn else calculate_history_start(memory.length() + attached_file_text.length()))
 	if not learned_context.is_empty() or not authoritative_context.is_empty():
 		# Earlier answers may have been produced before the relevant recording was
 		# indexed, or may contain a stale "I don't know" refusal. Do not let those
@@ -3654,7 +3661,10 @@ func send_message() -> void:
 					"This is the final internal generation repair. Return only executable source. Replace every description with real code, keep the UI responsive, and finish all handlers and the entry point before closing the single code fence."
 				]
 				var generation_repair_strategy: String = generation_repair_strategies[clampi(artifact_auto_retry_count - 1, 0, 2)]
-				messages.append({"role": "user", "content": generation_repair_strategy + " Include every feature from the original request. Output no prose, placeholder comments, partial draft, setup guide, or claim that the project is beyond scope."})
+				var repair_target := " Include every feature from the original request."
+				if compact_complex_repair:
+					repair_target = " Build one compact PySide6 Windows media explorer with: recursive os.walk scanning in a QThread worker; streamed batched results; pause/resume/cancel; image/video/audio extension filters; sortable searchable details; selection and context actions using os.startfile, Explorer /select, Open With and Properties shell calls; CSV/JSON export; saved JSON preferences; and an optional real QOpenGLWidget animated view with a safe fallback. Every visible action needs a handler."
+				messages.append({"role": "user", "content": generation_repair_strategy + repair_target + " Return one complete runnable Python file. Output no prose, placeholder comments, partial draft, setup guide, or claim that the project is beyond scope."})
 		else:
 			messages.append({"role": "user", "content": "Build it now. Do not acknowledge with words such as 'Sure' and do not describe what you might create. Your answer is valid only if it contains the complete runnable implementation in one correctly labeled code fence, with no placeholders, simulated behavior, random stand-ins, pass-only handlers, nested fences, split fragments, or invented repetitive properties. Every button and requested feature must call a real implementation. Keep the implementation compact enough to finish inside this response: prefer concise data-driven code over repetition, omit commentary, and never end midway through a statement or function."})
 	# Queue the complete request once. Preflight may reload the model, but must
@@ -4511,7 +4521,8 @@ func save_automatic_repair_lesson(answer: String) -> void:
 
 func update_thinking_animation() -> void:
 	if active_artifact_builder_mode:
-		set_status("CODE BUILDER ACTIVE • SEE BUILD MONITOR", colors.green)
+		# Token progress owns the header while a build is active. Updating a second
+		# generic status every frame made the two strings flicker/overlap visually.
 		if is_instance_valid(thinking_indicator):
 			thinking_indicator.text = "CODE BUILDER ACTIVE • progress is shown in the Build Monitor"
 			thinking_indicator.visible = true
@@ -5991,8 +6002,13 @@ func finish_generation() -> void:
 		# Incomplete generation and runtime validation are separate repair stages.
 		# A refused/placeholder draft needs several clean model passes without using
 		# up the later syntax/runtime auto-fix allowance or interrupting the user.
-		if artifact_auto_retry_count < 3 and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
-			artifact_auto_retry_count += 1
+		var collapsed_generation := cleaned.strip_edges().length() < 16
+		var retry_collapsed_without_spending_attempt := collapsed_generation and artifact_empty_retry_count < 2
+		if (artifact_auto_retry_count < 3 or retry_collapsed_without_spending_attempt) and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
+			if retry_collapsed_without_spending_attempt:
+				artifact_empty_retry_count += 1
+			else:
+				artifact_auto_retry_count += 1
 			artifact_partial_response = cleaned
 			active_artifact_builder_mode = false
 			active_artifact_language = ""
@@ -6010,8 +6026,9 @@ func finish_generation() -> void:
 			send_button.disabled = false
 			stop_button.disabled = true
 			set_microphone_available(true)
-			set_status("REPAIRING INCOMPLETE BUILD • ATTEMPT %d OF 3" % artifact_auto_retry_count, colors.amber)
-			set_artifact_monitor_phase("REPAIRING INCOMPLETE BUILD • %d/3" % artifact_auto_retry_count, "SAM rejected the draft and is correcting the missing implementation inside the same build job.", 0)
+			var repair_attempt_label := "EMPTY RESPONSE RECOVERY %d/2" % artifact_empty_retry_count if retry_collapsed_without_spending_attempt else "ATTEMPT %d OF 3" % artifact_auto_retry_count
+			set_status("REPAIRING INCOMPLETE BUILD • " + repair_attempt_label, colors.amber)
+			set_artifact_monitor_phase("REPAIRING INCOMPLETE BUILD • " + repair_attempt_label, "SAM rejected the draft and is correcting the missing implementation inside the same build job.", 0)
 			publish_builder_cat_telemetry("generation_repair", retry_corrections, 0, {"has_error": true, "validation_failures": artifact_failures, "source_excerpt": builder_source_excerpt(artifact_partial_response)})
 			call_deferred("send_message")
 			return
@@ -8715,6 +8732,7 @@ func show_artifact_failure_dialog(detail: String) -> void:
 		if action == &"retry":
 			artifact_retry_corrections = detail.left(5000)
 			artifact_auto_retry_count = 0
+			artifact_empty_retry_count = 0
 			artifact_retry_in_progress = true
 			input_box.text = artifact_repair_prompt if not artifact_repair_prompt.is_empty() else active_artifact_request
 			artifact_build_confirmed_once = true
