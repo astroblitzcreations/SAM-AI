@@ -183,6 +183,8 @@ var artifact_repair_prompt := ""
 var enhancement_idea_review_pending := false
 var enhancement_idea_code_id := -1
 var enhancement_idea_path := ""
+var enhancement_idea_prior_prompt := ""
+var enhancement_idea_rounds: Dictionary = {}
 var build_idea_review_pending := false
 var build_idea_original_request := ""
 var artifact_validation_retry_count := 0
@@ -5843,12 +5845,14 @@ func finish_generation() -> void:
 	var completed_idea_review := enhancement_idea_review_pending
 	var completed_idea_code_id := enhancement_idea_code_id
 	var completed_idea_path := enhancement_idea_path
+	var completed_idea_prior_prompt := enhancement_idea_prior_prompt
 	var completed_build_idea_review := build_idea_review_pending
 	var completed_build_idea_request := build_idea_original_request
 	var artifact_build_rejected := false
 	enhancement_idea_review_pending = false
 	enhancement_idea_code_id = -1
 	enhancement_idea_path = ""
+	enhancement_idea_prior_prompt = ""
 	build_idea_review_pending = false
 	build_idea_original_request = ""
 	context_request_serial += 1
@@ -6120,7 +6124,10 @@ func finish_generation() -> void:
 	restore_primary_engine_if_needed()
 	complete_pending_session_switch()
 	if completed_idea_review and not completed_idea_path.is_empty() and FileAccess.file_exists(completed_idea_path):
-		show_artifact_enhancement_dialog.call_deferred(completed_idea_code_id, completed_idea_path, cleaned)
+		var accumulated_ideas := cleaned.strip_edges()
+		if not completed_idea_prior_prompt.strip_edges().is_empty():
+			accumulated_ideas = completed_idea_prior_prompt.strip_edges() + "\n\n--- ADDITIONAL NEXT-LEVEL IDEAS ---\n\n" + accumulated_ideas
+		show_artifact_enhancement_dialog.call_deferred(completed_idea_code_id, completed_idea_path, accumulated_ideas)
 	elif completed_build_idea_review and not completed_build_idea_request.is_empty():
 		show_artifact_build_confirmation.call_deferred(completed_build_idea_request, cleaned)
 
@@ -8751,14 +8758,20 @@ func show_artifact_enhancement_dialog(code_id: int, path: String, initial_reques
 	, colors.cyan))
 	actions.add_child(make_button("✦ ASK SAM FOR IDEAS", func():
 		var supplemental := attached_file_text
-		var idea_prompt := "Review the attached current working app source and the relevant conversation in this active session, including the user's original build request and later feedback. Analyze what the app already implements and what it is still missing. Propose a specific prioritized set of fixes and additions that fit this exact app. Do not use a generic checklist, do not repeat a canned improvement pack, and do not output code yet. Return a concise editable revision prompt that I can approve."
-		if not request.text.strip_edges().is_empty():
-			idea_prompt += "\n\nThe user is currently considering these changes:\n" + request.text.strip_edges()
+		var prior_prompt := request.text.strip_edges()
+		var idea_round := int(enhancement_idea_rounds.get(path, 0)) + 1
+		enhancement_idea_rounds[path] = idea_round
+		var idea_prompt := "Review the attached CURRENT working app source and the relevant conversation in this active session, including the original build request, later feedback, and what the source really implements now. This is improvement-idea round %d. Propose the next practical tier of specific fixes, upgrades, polish, and useful features for this exact app. Prioritize changes that materially improve behavior, reliability, usability, and appearance. Do not output code yet. Return only a concise editable ADDITIONAL REVISION PROMPT that can be combined with earlier ideas." % idea_round
+		if not prior_prompt.is_empty():
+			idea_prompt += "\n\nThese changes were already suggested or entered. Do not repeat, paraphrase, or replace them. Find worthwhile additions beyond them, while staying compatible with them:\n\n" + prior_prompt
+		else:
+			idea_prompt += "\n\nDo not use a generic checklist or canned improvement pack. Tie every suggestion to something observed in this source or requested in this session."
 		if not supplemental.is_empty() and attached_file_path != path:
 			idea_prompt += "\n\nAdditional attached reference:\n" + supplemental.left(5000)
 		enhancement_idea_review_pending = true
 		enhancement_idea_code_id = code_id
 		enhancement_idea_path = path
+		enhancement_idea_prior_prompt = prior_prompt
 		attach_file(path)
 		input_box.text = idea_prompt
 		dialog.queue_free()
