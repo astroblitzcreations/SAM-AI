@@ -3602,6 +3602,8 @@ func send_message() -> void:
 	pending_repair_language = "Godot 4 / GDScript" if detected_language == "Godot 4 GDScript" else (detected_language if not detected_language.is_empty() else "General code")
 	if code_mode:
 		memory += "\n\nACTIVE MODE FOR THIS TURN: CODE ENGINEERING. Preserve every supplied feature. Work from the actual source rather than replacing it with a demo. Before answering, silently audit identifiers, every call against its function signature, ownership, state mutations, bounds, timer scheduling, rendering cleanup, and every requested feature. If a full file is requested, return the complete integrated file with no placeholders or omitted functions. Implement real behavior: never substitute random success/failure, simulated results, empty handlers, pass-only functions, TODOs, mock data, or comments describing work that the code does not perform. A request to improve an existing program requires a material user-visible improvement while retaining its working behavior; merely renaming, reformatting, adding comments, or moving the same controls is not an improvement. For Python desktop utilities, keep Tkinter updates on the main thread via root.after(), keep long work off the UI thread, and call the real operating-system or library API requested. Interactive GUI input handlers must redraw or update visible state immediately instead of waiting for a slow periodic timer; do not schedule duplicate update loops, and make restart resume a loop that stopped at game over. On a Tkinter Canvas, delete or update the previous tagged moving object before drawing its new frame so movement never leaves permanent trails. Ensure previews and controls are inside the declared window or canvas dimensions. If the user requests buttons, create real clickable Button controls; instructional text such as 'press R' is not a substitute. Returning code for the supervised SAVE/RUN controls is not itself a PC command and must not be refused merely because Workspace Tools are locked."
+		if detected_language.to_lower() in ["python", "py"] or request_text.to_lower().contains("python"):
+			memory += "\nPYTHON PERSISTENCE CONTRACT: Configuration/profile JSON readers must recover from missing, empty, malformed, interrupted, and incompatible files. Serialize framework enums and custom values as plain JSON values. Write through a temporary file and os.replace() so a crash cannot truncate the working settings file."
 		if request_text.to_lower().contains("game"):
 			memory += "\nACTIVE GAME BUILD CONTRACT: A benign request to build a game must never be refused and must never return a tutorial, scene-setup checklist, empty screen, one-button counter, or two-shape demo. Produce a cohesive playable game with visible objectives, challenge, feedback, controls, scoring/progression, and polished presentation appropriate to the requested scope. Before returning code, mentally execute this exact lifecycle: launch -> start input -> sustained gameplay -> pause -> resume -> player death/game over -> restart input -> reset every mutable run variable -> immediately enter a fresh playable round -> return to menu -> start again. Restart must never merely display Game Over again or require an undocumented second key. Initialize/reset player position, enemies, timers, health, score, input flags, cooldowns, and collections in one reset function used by both first start and restart. Keep persistent high score/profile data separate from per-run state and save it defensively. Verify collision/spawn locations cannot cause unavoidable instant death. For pygame, use one outer event/update/draw loop rather than nested state loops, cap delta time, keep all UI within the window, and handle QUIT in every state. If adaptive behavior is requested, implement a small transparent persisted profile or rule-based adaptation and label it honestly; do not claim the game trains a neural network or modifies its own source."
 		if not detected_language.is_empty():
@@ -6004,7 +6006,8 @@ func finish_generation() -> void:
 		# up the later syntax/runtime auto-fix allowance or interrupting the user.
 		var collapsed_generation := cleaned.strip_edges().length() < 16
 		var retry_collapsed_without_spending_attempt := collapsed_generation and artifact_empty_retry_count < 2
-		if (artifact_auto_retry_count < 6 or retry_collapsed_without_spending_attempt) and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
+		var generation_repair_limit := 2 if not artifact_repair_target_path.is_empty() else 6
+		if (artifact_auto_retry_count < generation_repair_limit or retry_collapsed_without_spending_attempt) and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
 			if retry_collapsed_without_spending_attempt:
 				artifact_empty_retry_count += 1
 			else:
@@ -6026,7 +6029,7 @@ func finish_generation() -> void:
 			send_button.disabled = false
 			stop_button.disabled = true
 			set_microphone_available(true)
-			var repair_attempt_label := "EMPTY RESPONSE RECOVERY %d/2" % artifact_empty_retry_count if retry_collapsed_without_spending_attempt else "ATTEMPT %d OF 6" % artifact_auto_retry_count
+			var repair_attempt_label := "EMPTY RESPONSE RECOVERY %d/2" % artifact_empty_retry_count if retry_collapsed_without_spending_attempt else "ATTEMPT %d OF %d" % [artifact_auto_retry_count, generation_repair_limit]
 			set_status("REPAIRING INCOMPLETE BUILD • " + repair_attempt_label, colors.amber)
 			set_artifact_monitor_phase("REPAIRING INCOMPLETE BUILD • " + repair_attempt_label, "SAM rejected the draft and is correcting the missing implementation inside the same build job.", 0)
 			publish_builder_cat_telemetry("generation_repair", retry_corrections, 0, {"has_error": true, "validation_failures": artifact_failures, "source_excerpt": builder_source_excerpt(artifact_partial_response)})
@@ -6035,7 +6038,7 @@ func finish_generation() -> void:
 		var failure_detail := "\n• ".join(artifact_failures)
 		if failure_detail.is_empty():
 			failure_detail = "the generated source failed SAM's safety and completeness checks"
-		cleaned = "BUILD PAUSED — SAM protected you from an incomplete generated draft after 6 automatic generation repairs. Nothing incomplete was saved or executed.\n\nStill missing or invalid:\n• %s\n\nThe original request and failure evidence are preserved. Use CONTINUE AUTO-REPAIR to begin another corrected repair cycle without retyping or resending the request manually." % failure_detail
+		cleaned = "BUILD PAUSED — SAM protected you from an incomplete generated draft after the automatic repair limit. Nothing incomplete was saved or executed.\n\nStill missing or invalid:\n• %s\n\nThe original request and failure evidence are preserved. Use CONTINUE AUTO-REPAIR to begin another corrected repair cycle without retyping or resending the request manually." % failure_detail
 		artifact_build_rejected = true
 		response_text = cleaned
 		render_buffer = ""
@@ -8283,7 +8286,8 @@ func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: i
 		if artifact_validation_retry_count > 0:
 			attempt_text = " • AUTO-FIX %d/3" % artifact_validation_retry_count
 		elif artifact_auto_retry_count > 0:
-			attempt_text = " • GENERATION REPAIR %d/6" % artifact_auto_retry_count
+			var display_limit := 2 if not artifact_repair_target_path.is_empty() else 6
+			attempt_text = " • GENERATION REPAIR %d/%d" % [artifact_auto_retry_count, display_limit]
 		artifact_monitor_label.text = "BUILDING COMPLETE FILE%s" % attempt_text
 	if is_instance_valid(artifact_monitor_detail):
 		artifact_monitor_detail.text = "%d characters • %d lines • about %d of %d output tokens" % [chars, lines, approximate_tokens, budget]
@@ -9811,6 +9815,36 @@ func show_missing_dependency_dialog(module: String, path: String, language: Stri
 	style_security_dialog(dialog, colors.amber)
 	dialog.popup_centered(Vector2i(820, 560))
 
+func try_deterministic_python_json_settings_repair(path: String, language: String, detail: String) -> bool:
+	if not FileAccess.file_exists(path) or not detail.contains("JSONDecodeError"):
+		return false
+	var source := FileAccess.get_file_as_string(path)
+	if not source.contains("json.load("):
+		return false
+	var repaired := source
+	# A missing-file-only handler crashes forever after a previous interrupted or
+	# unserializable write leaves a partial JSON document behind.
+	repaired = repaired.replace("except FileNotFoundError:", "except (FileNotFoundError, json.JSONDecodeError, OSError):")
+	# PySide enum values are not JSON serializable. Writing one directly truncates
+	# the destination before json.dump raises, which caused this exact session loop.
+	repaired = repaired.replace("'sort_order': self.sort_order,", "'sort_order': getattr(self.sort_order, 'value', self.sort_order),")
+	repaired = repaired.replace("\"sort_order\": self.sort_order,", "\"sort_order\": getattr(self.sort_order, 'value', self.sort_order),")
+	if repaired == source:
+		return false
+	if not safely_replace_text_file(path, repaired, "automatic-json-settings-repair"):
+		return false
+	# Quarantine the corrupt sidecar. The corrected loader also tolerates it, but
+	# moving it aside preserves evidence and lets the app recreate clean settings.
+	var settings_path := path.get_base_dir().path_join("settings.json")
+	if FileAccess.file_exists(settings_path):
+		var broken_path := path.get_base_dir().path_join("settings.corrupt-%d.json" % int(Time.get_unix_time_from_system()))
+		DirAccess.rename_absolute(settings_path, broken_path)
+	log_line("AUTO REPAIR", "Hardened malformed JSON settings handling in " + path)
+	set_status("AUTO-REPAIRED CORRUPT SETTINGS • RETRYING", colors.amber)
+	show_toast("SAM repaired the damaged settings loader locally • retrying the same app")
+	launch_supervised_retry(path, language)
+	return true
+
 func try_deterministic_pyside_import_repair(path: String, language: String, detail: String) -> bool:
 	if not FileAccess.file_exists(path):
 		return false
@@ -9891,6 +9925,8 @@ func try_deterministic_pyside_import_repair(path: String, language: String, deta
 
 func queue_artifact_auto_fix(path: String, language: String, detail: String) -> void:
 	if not FileAccess.file_exists(path):
+		return
+	if language.to_lower() in ["python", "py"] and try_deterministic_python_json_settings_repair(path, language, detail):
 		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_pyside_import_repair(path, language, detail):
 		return
