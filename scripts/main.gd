@@ -3332,7 +3332,8 @@ func send_message() -> void:
 	# A previous visual turn may have left the vision engine running. Normal
 	# Chat requests always return to the primary language model before they are
 	# sent, including coding prompts that happen to contain visual/UI words.
-	if not studio_turn and not _has_explicit_image_context_request(user_text) and engine_mode == "vision":
+	var has_pending_image_evidence := not attached_image_path.is_empty() or not attached_image_paths.is_empty() or not artifact_repair_target_path.is_empty()
+	if not studio_turn and not has_pending_image_evidence and not _has_explicit_image_context_request(user_text) and engine_mode == "vision":
 		pending_vision_send = false
 		pending_primary_text_send = true
 		restore_primary_when_done = false
@@ -3386,6 +3387,7 @@ func send_message() -> void:
 	var command_center_needs_vision := command_center_request_active and command_center_stage == "vision_diagnose" and not command_center_image_paths.is_empty()
 	if ((not attached_image_path.is_empty() and bool(settings.auto_vision_switch)) or command_center_needs_vision) and engine_mode != "vision":
 		if FileAccess.file_exists(str(settings.vision_model_path)) and FileAccess.file_exists(str(settings.vision_mmproj_path)):
+			pending_primary_text_send = false
 			pending_vision_send = true
 			restore_primary_when_done = true
 			engine_mode = "vision"
@@ -4323,6 +4325,22 @@ func parse_context_overflow(body: String) -> Dictionary:
 func handle_stream_http_error() -> void:
 	var response_code := stream_response_code
 	var body := stream_http_body.get_string_from_utf8()
+	var body_lower := body.to_lower()
+	# Defensive recovery for a routing race: a screenshot must never be sent to
+	# the primary text-only server. Keep the accepted request and load the paired
+	# vision model + MMPROJ exactly once instead of surfacing llama.cpp's HTTP 500.
+	if response_text.is_empty() and engine_mode != "vision" and (not attached_image_path.is_empty() or not attached_image_paths.is_empty()) and body_lower.contains("image input is not supported") and FileAccess.file_exists(str(settings.vision_model_path)) and FileAccess.file_exists(str(settings.vision_mmproj_path)):
+		stream_client.close()
+		pending_primary_text_send = false
+		pending_vision_send = true
+		restore_primary_when_done = true
+		engine_mode = "vision"
+		set_status("ROUTING IMAGE TO VISION ENGINE", colors.amber)
+		show_toast("Screenshot repair • switching to the configured vision model")
+		log_line("VISION", "Recovered image request that reached the primary server; loading vision model with MMPROJ")
+		show_model_switch_overlay()
+		call_deferred("start_engine")
+		return
 	var overflow := parse_context_overflow(body)
 	if not overflow.is_empty() and response_text.is_empty() and context_overflow_retries < CONTEXT_MAX_OVERFLOW_RETRIES:
 		context_overflow_retries += 1
