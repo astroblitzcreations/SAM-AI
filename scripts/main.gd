@@ -175,7 +175,7 @@ var artifact_retry_corrections := ""
 var artifact_partial_response := ""
 var artifact_output_token_budget := 0
 var artifact_progress_next_chars := 0
-var artifact_progress_step := 500
+var artifact_progress_step := 48
 var artifact_build_confirmed_once := false
 var artifact_auto_fix_enabled := true
 var artifact_repair_target_path := ""
@@ -3120,7 +3120,7 @@ func drain_render_buffer() -> void:
 				var source_lines := response_text.count("\n") + 1
 				var approximate_tokens := int(ceil(float(response_text.length()) / 3.2))
 				var budget := maxi(artifact_output_token_budget, 1)
-				var percent := mini(100, int(round(float(approximate_tokens) / float(budget) * 100.0)))
+				var percent := minf(100.0, float(approximate_tokens) / float(budget) * 100.0)
 				update_artifact_build_monitor(response_text.length(), source_lines, approximate_tokens, budget, percent)
 				artifact_progress_next_chars = response_text.length() + artifact_progress_step
 			set_status("BUILDING COMPLETE FILE • %d CHARS" % response_text.length(), colors.green)
@@ -6004,7 +6004,7 @@ func finish_generation() -> void:
 		# up the later syntax/runtime auto-fix allowance or interrupting the user.
 		var collapsed_generation := cleaned.strip_edges().length() < 16
 		var retry_collapsed_without_spending_attempt := collapsed_generation and artifact_empty_retry_count < 2
-		if (artifact_auto_retry_count < 3 or retry_collapsed_without_spending_attempt) and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
+		if (artifact_auto_retry_count < 6 or retry_collapsed_without_spending_attempt) and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
 			if retry_collapsed_without_spending_attempt:
 				artifact_empty_retry_count += 1
 			else:
@@ -6026,7 +6026,7 @@ func finish_generation() -> void:
 			send_button.disabled = false
 			stop_button.disabled = true
 			set_microphone_available(true)
-			var repair_attempt_label := "EMPTY RESPONSE RECOVERY %d/2" % artifact_empty_retry_count if retry_collapsed_without_spending_attempt else "ATTEMPT %d OF 3" % artifact_auto_retry_count
+			var repair_attempt_label := "EMPTY RESPONSE RECOVERY %d/2" % artifact_empty_retry_count if retry_collapsed_without_spending_attempt else "ATTEMPT %d OF 6" % artifact_auto_retry_count
 			set_status("REPAIRING INCOMPLETE BUILD • " + repair_attempt_label, colors.amber)
 			set_artifact_monitor_phase("REPAIRING INCOMPLETE BUILD • " + repair_attempt_label, "SAM rejected the draft and is correcting the missing implementation inside the same build job.", 0)
 			publish_builder_cat_telemetry("generation_repair", retry_corrections, 0, {"has_error": true, "validation_failures": artifact_failures, "source_excerpt": builder_source_excerpt(artifact_partial_response)})
@@ -6035,7 +6035,7 @@ func finish_generation() -> void:
 		var failure_detail := "\n• ".join(artifact_failures)
 		if failure_detail.is_empty():
 			failure_detail = "the generated source failed SAM's safety and completeness checks"
-		cleaned = "BUILD PAUSED — SAM protected you from an incomplete generated draft after 3 automatic generation repairs. Nothing incomplete was saved or executed.\n\nStill missing or invalid:\n• %s\n\nThe original request and failure evidence are preserved. Use CONTINUE AUTO-REPAIR to begin another corrected repair cycle without retyping or resending the request manually." % failure_detail
+		cleaned = "BUILD PAUSED — SAM protected you from an incomplete generated draft after 6 automatic generation repairs. Nothing incomplete was saved or executed.\n\nStill missing or invalid:\n• %s\n\nThe original request and failure evidence are preserved. Use CONTINUE AUTO-REPAIR to begin another corrected repair cycle without retyping or resending the request manually." % failure_detail
 		artifact_build_rejected = true
 		response_text = cleaned
 		render_buffer = ""
@@ -8269,7 +8269,7 @@ func hide_artifact_compact_monitor() -> void:
 	if is_instance_valid(artifact_monitor_compact):
 		artifact_monitor_compact.hide()
 
-func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: int, budget: int, percent: int) -> void:
+func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: int, budget: int, percent: float) -> void:
 	if not is_instance_valid(artifact_monitor):
 		show_artifact_build_monitor()
 	if is_instance_valid(artifact_monitor_progress):
@@ -8283,11 +8283,11 @@ func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: i
 		if artifact_validation_retry_count > 0:
 			attempt_text = " • AUTO-FIX %d/3" % artifact_validation_retry_count
 		elif artifact_auto_retry_count > 0:
-			attempt_text = " • GENERATION REPAIR %d/3" % artifact_auto_retry_count
+			attempt_text = " • GENERATION REPAIR %d/6" % artifact_auto_retry_count
 		artifact_monitor_label.text = "BUILDING COMPLETE FILE%s" % attempt_text
 	if is_instance_valid(artifact_monitor_detail):
 		artifact_monitor_detail.text = "%d characters • %d lines • about %d of %d output tokens" % [chars, lines, approximate_tokens, budget]
-	publish_builder_cat_telemetry("generating", "SAM is writing and reviewing the complete source file", percent, {
+	publish_builder_cat_telemetry("generating", "SAM is writing and reviewing the complete source file", int(round(percent)), {
 		"characters": chars,
 		"lines": lines,
 		"approximate_tokens": approximate_tokens,
@@ -9788,7 +9788,7 @@ func extract_missing_python_module(output: String) -> String:
 	return module
 
 func dependency_package_name(module: String) -> String:
-	var aliases := {"pil": "Pillow", "cv2": "opencv-python", "yaml": "PyYAML", "sklearn": "scikit-learn"}
+	var aliases := {"pil": "Pillow", "cv2": "opencv-python", "yaml": "PyYAML", "sklearn": "scikit-learn", "opengl": "PyOpenGL", "pyside6": "PySide6"}
 	return str(aliases.get(module.to_lower(), module))
 
 func show_missing_dependency_dialog(module: String, path: String, language: String, output: String) -> void:
@@ -9811,8 +9811,88 @@ func show_missing_dependency_dialog(module: String, path: String, language: Stri
 	style_security_dialog(dialog, colors.amber)
 	dialog.popup_centered(Vector2i(820, 560))
 
+func try_deterministic_pyside_import_repair(path: String, language: String, detail: String) -> bool:
+	if not FileAccess.file_exists(path):
+		return false
+	var source := FileAccess.get_file_as_string(path)
+	if not source.contains("PySide6"):
+		return false
+	var should_audit := detail.contains("ImportError") or detail.contains("NameError") or detail.contains("cannot import name")
+	if not should_audit:
+		return false
+	var lines: Array[String] = []
+	for raw_line in source.replace("\r", "").split("\n"):
+		lines.append(str(raw_line))
+	var module_symbols := {
+		"PySide6.QtGui": ["QAction", "QActionGroup", "QShortcut", "QKeySequence"],
+		"PySide6.QtWidgets": ["QStatusBar"]
+	}
+	var required: Dictionary = {}
+	for module_name in module_symbols:
+		required[module_name] = []
+		for symbol_value in module_symbols[module_name]:
+			var symbol := str(symbol_value)
+			if source.contains(symbol):
+				required[module_name].append(symbol)
+	var changed := false
+	# Remove known Qt classes from the wrong PySide6 import module first.
+	for line_index in range(lines.size()):
+		var line := lines[line_index]
+		if not line.begins_with("from PySide6.") or not line.contains(" import "):
+			continue
+		var imported_module := line.get_slice(" import ", 0).trim_prefix("from ").strip_edges()
+		var imported_names: Array[String] = []
+		for name_value in line.get_slice(" import ", 1).split(","):
+			var imported_name := str(name_value).strip_edges()
+			var correct_module := ""
+			for candidate_module in module_symbols:
+				if imported_name in module_symbols[candidate_module]:
+					correct_module = str(candidate_module)
+					break
+			if not correct_module.is_empty() and correct_module != imported_module:
+				changed = true
+				continue
+			imported_names.append(imported_name)
+		lines[line_index] = "from %s import %s" % [imported_module, ", ".join(imported_names)]
+	# Add every used known symbol to its correct module import.
+	for module_name in required:
+		var wanted: Array = required[module_name]
+		if wanted.is_empty():
+			continue
+		var module_line_index := -1
+		var already: Array[String] = []
+		for line_index in range(lines.size()):
+			var prefix := "from %s import " % module_name
+			if lines[line_index].begins_with(prefix):
+				module_line_index = line_index
+				for name_value in lines[line_index].trim_prefix(prefix).split(","):
+					already.append(str(name_value).strip_edges())
+				break
+		for symbol_value in wanted:
+			var symbol := str(symbol_value)
+			if symbol not in already:
+				already.append(symbol)
+				changed = true
+		if module_line_index >= 0:
+			lines[module_line_index] = "from %s import %s" % [module_name, ", ".join(already)]
+		else:
+			lines.insert(0, "from %s import %s" % [module_name, ", ".join(already)])
+			changed = true
+	if not changed:
+		return false
+	var repaired_source := "\n".join(lines)
+	if not safely_replace_text_file(path, repaired_source, "automatic-pyside-import-repair"):
+		return false
+	log_line("AUTO REPAIR", "Corrected PySide6 class imports in " + path)
+	set_status("AUTO-REPAIRED PYSIDE IMPORTS • RETRYING", colors.amber)
+	show_toast("SAM corrected the PySide6 imports locally • retrying the same app")
+	launch_supervised_retry(path, language)
+	return true
+
 func queue_artifact_auto_fix(path: String, language: String, detail: String) -> void:
 	if not FileAccess.file_exists(path):
+		return
+	if language.to_lower() in ["python", "py"] and try_deterministic_pyside_import_repair(path, language, detail):
 		return
 	if language.to_lower() in ["python", "py"] and try_deterministic_python_none_piece_repair(path, detail):
 		return
