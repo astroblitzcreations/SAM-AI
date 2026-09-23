@@ -3637,7 +3637,10 @@ func send_message() -> void:
 			# Some instruct models treat a malformed partial assistant turn as a
 			# pattern to repeat. Retry the original request from a clean turn instead
 			# of conditioning the model on the same truncated prefix forever.
-			messages.append({"role": "user", "content": "The previous draft was truncated and has been discarded. Start over and return the complete compact source file now in exactly one correctly labeled Markdown code fence. Include every feature from my request. Output no prose, no partial draft, and do not stop after imports or the constructor."})
+			if not artifact_repair_target_path.is_empty():
+				messages.append({"role": "user", "content": "The previous proposed revision was rejected and was NOT saved. Work from the complete attached working source again. Apply the requested changes without simplifying, renaming away, or discarding its existing classes, controls, and behaviors. Correct every validation failure listed in the system instructions. Return the entire validated replacement in exactly one correctly labeled Markdown code fence, with no prose."})
+			else:
+				messages.append({"role": "user", "content": "The previous draft was truncated and has been discarded. Start over and return the complete compact source file now in exactly one correctly labeled Markdown code fence. Include every feature from my request. Output no prose, no partial draft, and do not stop after imports or the constructor."})
 		else:
 			messages.append({"role": "user", "content": "Build it now. Do not acknowledge with words such as 'Sure' and do not describe what you might create. Your answer is valid only if it contains the complete runnable implementation in one correctly labeled code fence, with no placeholders, simulated behavior, random stand-ins, pass-only handlers, nested fences, split fragments, or invented repetitive properties. Every button and requested feature must call a real implementation. Keep the implementation compact enough to finish inside this response: prefer concise data-driven code over repetition, omit commentary, and never end midway through a statement or function."})
 	# Queue the complete request once. Preflight may reload the model, but must
@@ -5904,6 +5907,9 @@ func finish_generation() -> void:
 	var proposed_revision_source := extract_first_fenced_code(cleaned) if not completed_repair_path.is_empty() else ""
 	var existing_revision_source := FileAccess.get_file_as_string(completed_repair_path) if not completed_repair_path.is_empty() and FileAccess.file_exists(completed_repair_path) else ""
 	var artifact_revision_unchanged := not proposed_revision_source.is_empty() and not existing_revision_source.is_empty() and proposed_revision_source.strip_edges() == existing_revision_source.strip_edges()
+	var artifact_revision_severely_reduced := not proposed_revision_source.is_empty() and existing_revision_source.length() >= 600 and proposed_revision_source.length() < int(existing_revision_source.length() * 0.65)
+	var proposed_revision_validation := validate_text_candidate_for_path(completed_repair_path, proposed_revision_source) if not proposed_revision_source.is_empty() else {"ok": true, "detail": "No revision candidate."}
+	var artifact_revision_invalid := not proposed_revision_source.is_empty() and not bool(proposed_revision_validation.get("ok", false))
 	var artifact_game_missing_restart := game_request and (request_lower.contains("restart") or request_lower.contains("gameover") or request_lower.contains("game over")) and not (game_source.contains("reset_game") or game_source.contains("new_game") or game_source.contains("start_game"))
 	var artifact_game_missing_combat := game_request and (request_lower.contains("shoot") or request_lower.contains("attack") or request_lower.contains("enemies")) and not (game_source.contains("bullet") or game_source.contains("projectile") or game_source.contains("shot") or game_source.contains("attack"))
 	var artifact_game_missing_npcs := game_request and (request_lower.contains("people") or request_lower.contains("npc") or request_lower.contains("talk")) and not (game_source.contains("npc") or game_source.contains("dialog") or game_source.contains("story"))
@@ -5935,7 +5941,11 @@ func finish_generation() -> void:
 		artifact_failures.append("score/save persistence was missing")
 	if artifact_revision_unchanged:
 		artifact_failures.append("the revision was byte-for-byte unchanged and did not apply the requested edit or influence")
-	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged):
+	if artifact_revision_severely_reduced:
+		artifact_failures.append("the proposed revision discarded most of the working application instead of preserving and upgrading it")
+	if artifact_revision_invalid:
+		artifact_failures.append("the proposed revision failed source validation: %s" % str(proposed_revision_validation.get("detail", "validation failed")).left(500))
+	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged or artifact_revision_severely_reduced or artifact_revision_invalid):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
 		if artifact_auto_retry_count < 1 and artifact_total_retry_count < 3 and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
 			artifact_auto_retry_count += 1
@@ -6085,7 +6095,10 @@ func finish_generation() -> void:
 		chat_log.append_text("\n[right][url=speak:%d][color=#4deeea]🔊 READ ALOUD[/color][/url][/right]\n" % final_history_index)
 		if force_chat_follow or chat_is_near_bottom():
 			chat_log.scroll_to_line(chat_log.get_line_count())
-	if completed_artifact_turn and not rendered_code_blocks.is_empty():
+	if completed_artifact_turn and artifact_build_rejected:
+		close_artifact_build_monitor()
+		show_artifact_failure_dialog.call_deferred(cleaned)
+	elif completed_artifact_turn and not rendered_code_blocks.is_empty():
 		var completed_code_id := rendered_code_blocks.size() - 1
 		var completed_path := completed_repair_path
 		if completed_path.is_empty() or not FileAccess.file_exists(completed_path):
@@ -6099,8 +6112,6 @@ func finish_generation() -> void:
 			show_artifact_result_dialog.call_deferred(completed_code_id, completed_path, completed_validation)
 	elif completed_artifact_turn:
 		close_artifact_build_monitor()
-		if artifact_build_rejected:
-			show_artifact_failure_dialog.call_deferred(cleaned)
 	if should_offer_image_edit_run and not rendered_code_blocks.is_empty():
 		# The edit request itself authorizes preparing the job, but execution still
 		# receives the normal one-run confirmation with the exact script path.
@@ -8407,6 +8418,22 @@ func prune_backup_folders(root: String, prefix: String, keep: int) -> void:
 		if remove_backup_tree(stale_path):
 			log_line("BACKUP", "Pruned expired safety snapshot: " + stale_path)
 
+func validate_text_candidate_for_path(target_path: String, contents: String) -> Dictionary:
+	if target_path.is_empty() or contents.strip_edges().is_empty():
+		return {"ok": false, "detail": "The proposed revision is empty or has no target path."}
+	var extension := target_path.get_extension()
+	var candidate_path := target_path + ".sam-candidate-%d" % Time.get_ticks_msec()
+	if not extension.is_empty():
+		candidate_path = target_path.get_basename() + ".sam-candidate-%d.%s" % [Time.get_ticks_msec(), extension]
+	var candidate := FileAccess.open(candidate_path, FileAccess.WRITE)
+	if candidate == null:
+		return {"ok": false, "detail": "SAM could not stage the proposed revision for validation."}
+	candidate.store_string(contents)
+	candidate.close()
+	var result := validate_staged_text_file(candidate_path, contents)
+	DirAccess.remove_absolute(candidate_path)
+	return result
+
 func validate_staged_text_file(path: String, contents: String) -> Dictionary:
 	if contents.strip_edges().is_empty():
 		return {"ok": false, "detail": "The replacement file is empty."}
@@ -8565,7 +8592,7 @@ func show_artifact_failure_dialog(detail: String) -> void:
 	dialog.add_button("PUT ORIGINAL REQUEST IN COMPOSER", true, "retry")
 	dialog.custom_action.connect(func(action: StringName):
 		if action == &"retry":
-			input_box.text = active_artifact_request
+			input_box.text = artifact_repair_prompt if not artifact_repair_prompt.is_empty() else active_artifact_request
 			input_box.grab_focus()
 			dialog.queue_free())
 	dialog.confirmed.connect(dialog.queue_free)
@@ -8622,7 +8649,10 @@ func show_artifact_result_dialog(code_id: int, path: String, validation: Diction
 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(status)
 	var preview := TextEdit.new()
-	preview.text = rendered_code_blocks[code_id]
+	# The path is authoritative. Chat can contain older fenced code blocks from a
+	# rejected repair; previewing one of those made a protected working file look
+	# as though it had been replaced by the failed draft.
+	preview.text = FileAccess.get_file_as_string(path) if FileAccess.file_exists(path) else rendered_code_blocks[code_id]
 	preview.editable = false
 	preview.custom_minimum_size = Vector2(0, 150)
 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
