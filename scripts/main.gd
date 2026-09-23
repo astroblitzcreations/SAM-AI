@@ -3519,6 +3519,13 @@ func send_message() -> void:
 		memory = "You are SAM's local code completion engine. Produce exactly one complete, compact, runnable source file in the requested language. Return only one correctly labeled Markdown code fence. Implement every requested feature with real behavior. Never use placeholders, TODOs, simulated results, pass-only handlers, nested fences, explanations, or setup instructions. Prefer concise data-driven code and always close every statement, function, class, and code fence."
 		if not artifact_retry_corrections.is_empty():
 			memory += "\n\nTHE PREVIOUS DRAFT WAS REJECTED. Fix every one of these failures in the fresh complete file:\n- " + artifact_retry_corrections.replace("\n", "\n- ")
+	elif not artifact_repair_target_path.is_empty():
+		# Screenshot-assisted repairs already carry the complete working source and
+		# visual evidence. The full MemoryCore/tool manual/RAG archive can consume a
+		# small vision model's entire context before it sees either one.
+		memory = "You are SAM's visual code repair engine. Inspect the screenshot as runtime evidence and the attached complete source as the authoritative working application. Diagnose the root cause, preserve all working behavior, and return exactly one complete corrected replacement file in one correctly labeled Markdown code fence. Do not return a patch, tutorial, omitted sections, placeholders, or prose. For Tkinter, keep file traversal off the UI thread and marshal every widget update through root.after or a queue consumed by root.after."
+		context_desired_output = mini(context_desired_output, 4096)
+		log_line("CONTEXT", "Screenshot repair uses compact source + vision contract; unrelated memory and retrieval were excluded")
 	elif live_voice_turn:
 		memory = compact_memory_for_live_voice(memory)
 		context_desired_output = mini(context_desired_output, 512)
@@ -3531,7 +3538,7 @@ func send_message() -> void:
 		memory = build_memory_for_request(memory, request_text)
 	var retrieval_query := source_trace_question if not source_trace_question.is_empty() else request_text
 	var live_saved_context := live_voice_turn and live_voice_wants_saved_context(request_text)
-	var skip_saved_context := command_center_turn or artifact_retry_in_progress or fast_chat or (live_voice_turn and not live_saved_context)
+	var skip_saved_context := command_center_turn or artifact_retry_in_progress or not artifact_repair_target_path.is_empty() or fast_chat or (live_voice_turn and not live_saved_context)
 	var rag_top_k := clampi(int(settings.get("rag_top_k", 5)), 1, 12)
 	var authoritative_context := "" if skip_saved_context else retrieve_explicit_memory(memory, retrieval_query, mini(rag_top_k, 6))
 	var learned_context := "" if skip_saved_context or not bool(settings.get("rag_enabled", true)) else retrieve_knowledge(retrieval_query, rag_top_k)
@@ -3583,7 +3590,7 @@ func send_message() -> void:
 		var artifact_request_lower := request_text.to_lower()
 		var simple_media_scanner := artifact_request_lower.contains("scan") and (artifact_request_lower.contains("drive") or artifact_request_lower.contains("folder")) and (artifact_request_lower.contains("image") or artifact_request_lower.contains("video") or artifact_request_lower.contains("music") or artifact_request_lower.contains("media"))
 		if simple_media_scanner:
-			memory += "\nMEDIA SCANNER BUILD CONTRACT: Perform recursive scanning in a real background worker so the window remains responsive, and marshal all UI updates back to the UI thread. Every matched image, video, and music file must remain visible in the scrollable results: use a real image thumbnail where available and a labeled media-type fallback tile/icon otherwise. Implement only the Windows shell actions the user actually requested. If the user asked to double-click to open a file, bind double-click to the normal Windows default-app open operation; do not invent Open With, Properties, or Open File Location requirements."
+			memory += "\nMEDIA SCANNER BUILD CONTRACT: Enumerate actual Windows logical drives using ctypes GetLogicalDrives/GetLogicalDriveStrings or another real Windows drive API; never derive drive letters from os.listdir('/'). Select the first available drive by default and reject an empty/nonexistent selection visibly. Perform recursive scanning in a daemon background worker so the window remains responsive, marshal every widget update back to the UI thread with root.after or a UI queue, and make the All filter test the flattened union of every extension category. Every matched image, video, and music file must remain visible in the scrollable results: use a real image thumbnail where available and a labeled media-type fallback tile/icon otherwise. Implement only the Windows shell actions the user actually requested. If the user asked to double-click to open a file, bind double-click to the normal Windows default-app open operation; do not invent Open With, Properties, or Open File Location requirements."
 		code_mode = true
 		# Image manipulation is a local file-processing job. Never route it to the
 		# Godot project builder merely because the request is visual.
@@ -5944,11 +5951,16 @@ func finish_generation() -> void:
 	var request_lower := active_artifact_request.to_lower()
 	var game_request := request_lower.contains("game")
 	var game_source := cleaned_lower
-	var media_explorer_request := request_lower.contains("scan") and request_lower.contains("drive") and request_lower.contains("image") and request_lower.contains("video")
+	var media_source_signature := game_source.contains("mediascanner") or (game_source.contains("media_type") and game_source.contains("get_drives"))
+	var media_explorer_request := (request_lower.contains("scan") and request_lower.contains("drive") and request_lower.contains("image") and request_lower.contains("video")) or media_source_signature
 	var gpu_desktop_request := media_explorer_request and (request_lower.contains("gpu") or request_lower.contains("opengl") or request_lower.contains("3d"))
 	var artifact_media_missing_scan := media_explorer_request and not (game_source.contains("os.walk") or game_source.contains("os.scandir") or game_source.contains("qdiriterator") or game_source.contains("rglob("))
 	var artifact_media_missing_worker := media_explorer_request and not (game_source.contains("qthread") or game_source.contains("threading.thread") or (game_source.contains("from threading import") and game_source.contains("thread(")) or game_source.contains("threadpoolexecutor") or game_source.contains("concurrent.futures") or game_source.contains("qrunnable") or game_source.contains("asyncio.to_thread"))
 	var artifact_media_missing_filters := media_explorer_request and not (game_source.contains("image") and game_source.contains("video") and (game_source.contains("audio") or game_source.contains("music")))
+	var artifact_media_broken_drive_list := media_explorer_request and (game_source.contains("os.listdir(\"/\")") or game_source.contains("os.listdir('/')"))
+	var artifact_media_broken_all_filter := media_explorer_request and game_source.contains("if media_type == \"all\"") and game_source.contains("extensions = {k: v for k, v in extensions.items()}") and game_source.contains("extensions.get(media_type")
+	var artifact_media_missing_ui_marshal := media_explorer_request and game_source.contains("tkinter") and (game_source.contains("threading.thread") or game_source.contains("thread(")) and not (game_source.contains("root.after") or game_source.contains("self.root.after") or game_source.contains("queue.queue"))
+	var artifact_media_invalid_listbox_thumbnail := media_explorer_request and game_source.contains("listbox") and game_source.contains(".image_create(")
 	var artifact_media_missing_opengl := gpu_desktop_request and not (game_source.contains("qopenglwidget") or game_source.contains("moderngl") or game_source.contains("opengl.gl") or game_source.contains("glshadersource"))
 	var requests_open_with := request_lower.contains("open with")
 	var requests_open_location := request_lower.contains("open file location") or request_lower.contains("show in explorer") or request_lower.contains("reveal in explorer") or request_lower.contains("explorer /select")
@@ -5990,6 +6002,14 @@ func finish_generation() -> void:
 		artifact_failures.append("the media scan had no background worker and would freeze or block the UI")
 	if artifact_media_missing_filters:
 		artifact_failures.append("image, video, and music category filtering was not implemented")
+	if artifact_media_broken_drive_list:
+		artifact_failures.append("drive discovery incorrectly used os.listdir('/') instead of a Windows logical-drive API")
+	if artifact_media_broken_all_filter:
+		artifact_failures.append("the All filter looked up a nonexistent 'all' extension list and would return no files")
+	if artifact_media_missing_ui_marshal:
+		artifact_failures.append("the Tkinter scan worker updated widgets directly instead of marshaling updates through root.after or a UI queue")
+	if artifact_media_invalid_listbox_thumbnail:
+		artifact_failures.append("the generated Tkinter Listbox used the unsupported image_create API")
 	if artifact_media_missing_opengl:
 		artifact_failures.append("the requested GPU-backed OpenGL/3D viewport was not implemented")
 	if artifact_media_missing_shell_actions:
@@ -6012,14 +6032,14 @@ func finish_generation() -> void:
 		artifact_failures.append("the proposed revision discarded most of the working application instead of preserving and upgrading it")
 	if artifact_revision_invalid:
 		artifact_failures.append("the proposed revision failed source validation: %s" % str(proposed_revision_validation.get("detail", "validation failed")).left(500))
-	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_is_comment_outline or artifact_complex_too_small or artifact_media_missing_scan or artifact_media_missing_worker or artifact_media_missing_filters or artifact_media_missing_opengl or artifact_media_missing_shell_actions or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged or artifact_revision_severely_reduced or artifact_revision_invalid):
+	if active_artifact_builder_mode and (cleaned.length() < 120 or artifact_fence_count != 2 or artifact_has_mixed_fake_fences or artifact_wrong_language or artifact_has_placeholder or artifact_has_simulated_logic or artifact_has_pass_only_handler or artifact_is_comment_outline or artifact_complex_too_small or artifact_media_missing_scan or artifact_media_missing_worker or artifact_media_missing_filters or artifact_media_broken_drive_list or artifact_media_broken_all_filter or artifact_media_missing_ui_marshal or artifact_media_invalid_listbox_thumbnail or artifact_media_missing_opengl or artifact_media_missing_shell_actions or artifact_has_fake_image_api or artifact_has_broken_image_path or artifact_has_naive_whole_image_paste or artifact_ignores_requested_white or artifact_has_no_image_mask or artifact_masks_entire_image or artifact_shadows_pillow_image or artifact_uses_wrong_image or artifact_game_missing_restart or artifact_game_missing_combat or artifact_game_missing_npcs or artifact_game_missing_interiors or artifact_game_missing_persistence or artifact_game_too_small or artifact_revision_unchanged or artifact_revision_severely_reduced or artifact_revision_invalid):
 		log_line("SAFETY", "Rejected incomplete artifact response: " + cleaned.left(120))
 		# Incomplete generation and runtime validation are separate repair stages.
 		# A refused/placeholder draft needs several clean model passes without using
 		# up the later syntax/runtime auto-fix allowance or interrupting the user.
 		var collapsed_generation := cleaned.strip_edges().length() < 16
 		var retry_collapsed_without_spending_attempt := collapsed_generation and artifact_empty_retry_count < 2
-		var generation_repair_limit := 2 if not artifact_repair_target_path.is_empty() else 6
+		var generation_repair_limit := 3 if not artifact_repair_target_path.is_empty() else 6
 		if (artifact_auto_retry_count < generation_repair_limit or retry_collapsed_without_spending_attempt) and (not active_artifact_request.is_empty() or not artifact_repair_prompt.is_empty()):
 			if retry_collapsed_without_spending_attempt:
 				artifact_empty_retry_count += 1
@@ -8309,7 +8329,7 @@ func update_artifact_build_monitor(chars: int, lines: int, approximate_tokens: i
 		if artifact_validation_retry_count > 0:
 			attempt_text = " • AUTO-FIX %d/3" % artifact_validation_retry_count
 		elif artifact_auto_retry_count > 0:
-			var display_limit := 2 if not artifact_repair_target_path.is_empty() else 6
+			var display_limit := 3 if not artifact_repair_target_path.is_empty() else 6
 			attempt_text = " • GENERATION REPAIR %d/%d" % [artifact_auto_retry_count, display_limit]
 		artifact_monitor_label.text = "BUILDING COMPLETE FILE%s" % attempt_text
 	if is_instance_valid(artifact_monitor_detail):
@@ -8931,9 +8951,26 @@ func show_artifact_enhancement_dialog(code_id: int, path: String, initial_reques
 	attachment_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	attachment_status.add_theme_color_override("font_color", colors.muted)
 	box.add_child(attachment_status)
+	var evidence_preview := TextureRect.new()
+	evidence_preview.custom_minimum_size = Vector2(0, 110)
+	evidence_preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	evidence_preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	evidence_preview.visible = false
+	box.add_child(evidence_preview)
+	var refresh_evidence_preview := func() -> void:
+		if attached_image_path.is_empty() or not FileAccess.file_exists(attached_image_path):
+			evidence_preview.visible = false
+			return
+		var evidence_image := Image.load_from_file(attached_image_path)
+		if evidence_image == null or evidence_image.is_empty():
+			evidence_preview.visible = false
+			return
+		evidence_preview.texture = ImageTexture.create_from_image(evidence_image)
+		evidence_preview.visible = true
 	request.gui_input.connect(func(event: InputEvent):
 		if event is InputEventKey and event.pressed and not event.echo and event.ctrl_pressed and event.keycode == KEY_V and DisplayServer.clipboard_has_image():
 			attach_clipboard_image()
+			refresh_evidence_preview.call()
 			attachment_status.text = "Attached %d screenshot%s from the clipboard • Vision will analyze %s with the edit request." % [attached_image_paths.size(), "" if attached_image_paths.size() == 1 else "s", "it" if attached_image_paths.size() == 1 else "them"]
 			get_viewport().set_input_as_handled())
 	var workflow := Label.new()
@@ -8953,6 +8990,7 @@ func show_artifact_enhancement_dialog(code_id: int, path: String, initial_reques
 		picker.file_selected.connect(func(selected_path: String):
 			if attach_file(selected_path):
 				attachment_status.text = "Attached: %s%s" % [selected_path.get_file(), " • Vision will analyze the screenshot" if selected_path.get_extension().to_lower() in ["png", "jpg", "jpeg", "webp", "gif", "bmp"] else " • SAM will read this reference with the source"]
+				refresh_evidence_preview.call()
 			picker.queue_free())
 		picker.canceled.connect(picker.queue_free)
 		add_child(picker)
