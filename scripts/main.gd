@@ -1960,6 +1960,7 @@ func setup_visual_studio() -> void:
 	visual_studio.generate_requested.connect(on_visual_studio_generate)
 	visual_studio.install_requested.connect(show_wan22_install_dialog)
 	apply_theme_recursive(visual_studio)
+	restore_latest_visual_result.call_deferred()
 	# Quick Image no longer shares Chat's composer. It is now only a shortcut
 	# into the isolated studio, preventing stale visual presets from contaminating
 	# coding or ordinary conversation turns.
@@ -1970,6 +1971,25 @@ func setup_visual_studio() -> void:
 	var new_session := actions.get_node_or_null("NewSession")
 	if new_session:
 		actions.move_child(studio_button, new_session.get_index())
+
+func restore_latest_visual_result() -> void:
+	if not is_instance_valid(visual_studio):
+		return
+	var workspace := active_session_workspace_dir()
+	if not DirAccess.dir_exists_absolute(workspace):
+		return
+	var folders := Array(DirAccess.get_directories_at(workspace))
+	folders.sort()
+	folders.reverse()
+	for folder_name_value in folders:
+		var folder_name := str(folder_name_value)
+		if not folder_name.begins_with("wan22_"):
+			continue
+		var recovered := find_completed_visual_image(workspace.path_join(folder_name).path_join("main.py"))
+		if not recovered.is_empty():
+			visual_studio.show_result(recovered)
+			visual_studio.set_status("RECOVERED COMPLETE RESULT • This output was found in the active session and is ready below.")
+			return
 
 func open_visual_studio(prompt := "", output_kind := "image") -> void:
 	if visual_studio == null:
@@ -2000,6 +2020,7 @@ func on_visual_studio_generate(prompt: String, output_kind: String, duration_sec
 	else:
 		clear_attachment()
 	visual_studio_turn = true
+	visual_studio.set_busy(true)
 	var reference_instruction := "Use this image as a reference and " if not reference_path.is_empty() else ""
 	input_box.text = ("Create an image: " if output_kind == "image" else "Create a video lasting %.1f seconds at %d FPS: " % [duration_seconds, fps]) + reference_instruction + prompt
 	visual_studio.set_status("Preparing %s • %d frame%s" % [output_kind, visual_studio_frame_count, "" if visual_studio_frame_count == 1 else "s"])
@@ -5815,6 +5836,7 @@ func finish_generation() -> void:
 	var completed_idea_path := enhancement_idea_path
 	var completed_build_idea_review := build_idea_review_pending
 	var completed_build_idea_request := build_idea_original_request
+	var artifact_build_rejected := false
 	enhancement_idea_review_pending = false
 	enhancement_idea_code_id = -1
 	enhancement_idea_path = ""
@@ -5926,6 +5948,7 @@ func finish_generation() -> void:
 		if failure_detail.is_empty():
 			failure_detail = "the generated source failed SAM's safety and completeness checks"
 		cleaned = "BUILD STOPPED — SAM rejected the generated draft after the automatic rebuild because it was still incomplete. Nothing was saved or executed.\n\nMissing or invalid:\n• %s\n\nThe original request is preserved. Press Transmit to try again; SAM will build a fresh complete file." % failure_detail
+		artifact_build_rejected = true
 		response_text = cleaned
 		render_buffer = ""
 		set_status("INCOMPLETE BUILD REJECTED", colors.amber)
@@ -6058,13 +6081,18 @@ func finish_generation() -> void:
 			show_artifact_result_dialog.call_deferred(completed_code_id, completed_path, completed_validation)
 	elif completed_artifact_turn:
 		close_artifact_build_monitor()
+		if artifact_build_rejected:
+			show_artifact_failure_dialog.call_deferred(cleaned)
 	if should_offer_image_edit_run and not rendered_code_blocks.is_empty() and bool(settings.get("pc_commands_enabled", false)):
 		# The edit request itself authorizes preparing the job, but execution still
 		# receives the normal one-run confirmation with the exact script path.
 		request_run_rendered_code.call_deferred(rendered_code_blocks.size() - 1)
 	var elapsed := (Time.get_ticks_msec() - response_started_ms) / 1000.0
 	var chars_per_second := cleaned.length() / maxf(elapsed, 0.01)
-	set_status("DONE • %.1fs • %.1f chars/s" % [elapsed, chars_per_second], colors.green)
+	if artifact_build_rejected:
+		set_status("BUILD REJECTED • %.1fs • NOTHING SAVED OR RUN" % elapsed, colors.amber)
+	else:
+		set_status("DONE • %.1fs • %.1f chars/s" % [elapsed, chars_per_second], colors.green)
 	log_line("DONE", "Generated %s chars in %.2fs" % [cleaned.length(), elapsed])
 	send_button.disabled = false
 	send_button.text = "TRANSMIT"
@@ -8498,6 +8526,25 @@ func extract_first_fenced_code(content: String) -> String:
 		return ""
 	return content.substr(first_newline + 1, fence_end - first_newline - 1).strip_edges(false, true)
 
+func show_artifact_failure_dialog(detail: String) -> void:
+	close_artifact_build_monitor()
+	var dialog := AcceptDialog.new()
+	dialog.title = "SAM-AI BUILD DID NOT COMPLETE"
+	dialog.dialog_text = detail
+	dialog.ok_button_text = "RETURN TO CHAT"
+	dialog.min_size = Vector2i(680, 390)
+	dialog.add_button("PUT ORIGINAL REQUEST IN COMPOSER", true, "retry")
+	dialog.custom_action.connect(func(action: StringName):
+		if action == &"retry":
+			input_box.text = active_artifact_request
+			input_box.grab_focus()
+			dialog.queue_free())
+	dialog.confirmed.connect(dialog.queue_free)
+	add_child(dialog)
+	apply_theme_recursive(dialog)
+	style_security_dialog(dialog, colors.amber)
+	dialog.popup_centered_clamped(Vector2i(760, 470), 0.88)
+
 func show_artifact_result_dialog(code_id: int, path: String, validation: Dictionary) -> void:
 	if code_id < 0 or code_id >= rendered_code_blocks.size():
 		return
@@ -9314,6 +9361,8 @@ func update_visual_job_progress(job: Dictionary) -> void:
 
 	set_startup_progress(displayed, title, detail, telemetry)
 	set_status("WAN VISUAL * %.1f%%%s" % [displayed, " * ABOUT " + eta if not eta.is_empty() else " * ACTIVE"], colors.amber)
+	if is_instance_valid(visual_studio):
+		visual_studio.set_status("%s • %.1f%%\n%s\n%s" % [title, displayed, detail, telemetry])
 func poll_supervised_run_jobs() -> void:
 	for index in range(supervised_run_jobs.size() - 1, -1, -1):
 		var job: Dictionary = supervised_run_jobs[index]
@@ -9374,11 +9423,26 @@ func poll_supervised_run_jobs() -> void:
 			var completed_script := str(job.get("path", ""))
 			var completed_image := find_completed_visual_image(completed_script)
 			if not completed_image.is_empty():
-				var completion_message := "Your image is ready. Use **USE THIS IMAGE AGAIN** beneath it to attach this result and continue editing it."
-				history.append({"role": "assistant", "content": completion_message, "image_path": completed_image})
+				if is_instance_valid(visual_studio):
+					visual_studio.show_result(completed_image)
+				var completed_is_image := completed_image.get_extension().to_lower() in ["png", "jpg", "jpeg", "webp", "bmp"]
+				var completion_message := "Your image is ready. Use **USE THIS IMAGE AGAIN** beneath it to attach this result and continue editing it." if completed_is_image else "Your video is ready. Use Image + Video Studio's Open Result or Open Output Folder controls to view it."
+				var completion_item := {"role": "assistant", "content": completion_message}
+				if completed_is_image:
+					completion_item.image_path = completed_image
+				else:
+					completion_item.file_path = completed_image
+				history.append(completion_item)
 				save_history()
 				redraw_history()
-				show_toast("Image complete • ready to view or use again")
+				show_toast("%s complete • ready to view" % ("Image" if completed_is_image else "Video"))
+			elif completed_script.replace("\\", "/").to_lower().contains("/wan22_"):
+				set_session_status("error")
+				set_status("VISUAL JOB ENDED • OUTPUT FILE NOT FOUND", colors.red)
+				if is_instance_valid(visual_studio):
+					visual_studio.set_busy(false)
+					visual_studio.set_status("The visual process ended, but SAM could not find the promised PNG/MP4. Open the output folder or review the run log; this job is not marked complete.")
+				show_toast("Visual job ended without an output file • completion was not accepted")
 			else:
 				show_toast("Generated project completed successfully")
 			continue
@@ -9390,6 +9454,9 @@ func poll_supervised_run_jobs() -> void:
 		elif try_repair_invalid_python_output_path(str(job.get("path", "")), str(job.get("language", "")), output):
 			pass
 		else:
+			if str(job.get("path", "")).replace("\\", "/").to_lower().contains("/wan22_") and is_instance_valid(visual_studio):
+				visual_studio.set_busy(false)
+				visual_studio.set_status("Visual generation failed. Review the supervised run error and log; no result was produced.")
 			place_run_error_in_composer(str(job.get("path", "")), output)
 
 func find_completed_visual_image(script_path: String) -> String:
@@ -9398,10 +9465,14 @@ func find_completed_visual_image(script_path: String) -> String:
 		return ""
 	var folder := script_path.get_base_dir()
 	var candidates := [
+		folder.path_join("wan22_reference_result_face_restored.png"),
+		folder.path_join("wan22_reference_result.png"),
+		folder.path_join("wan22_reference_result.mp4"),
 		folder.path_join("wan22_reference_image_face_restored.png"),
 		folder.path_join("wan22_reference_image.png"),
 		folder.path_join("wan22_generated_image_face_restored.png"),
-		folder.path_join("wan22_generated_image.png")
+		folder.path_join("wan22_generated_image.png"),
+		folder.path_join("wan22_output.mp4")
 	]
 	for candidate_value in candidates:
 		var candidate := str(candidate_value)

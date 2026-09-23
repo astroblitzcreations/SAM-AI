@@ -13,6 +13,10 @@ var frame_summary: Label
 var reference_path: LineEdit
 var preset_selector: OptionButton
 var status_label: Label
+var result_preview: TextureRect
+var result_path_label: Label
+var latest_result_path := ""
+var generate_button: Button
 
 const PRESETS := [
 	{"name": "Portrait • studio", "prompt": "A polished photorealistic studio portrait, natural expression, realistic skin and hair, soft key light, subtle rim light, elegant neutral background."},
@@ -86,21 +90,44 @@ func build_ui() -> void:
 	status_label.text = "Studio idle • choose Image or Video, review settings, then generate"
 	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(status_label)
+	result_preview = TextureRect.new()
+	result_preview.custom_minimum_size = Vector2(0, 260)
+	result_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	result_preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	result_preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	result_preview.visible = false
+	add_child(result_preview)
+	result_path_label = Label.new()
+	result_path_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	result_path_label.visible = false
+	add_child(result_path_label)
 	var actions := HFlowContainer.new()
 	actions.add_theme_constant_override("h_separation", 8)
 	add_child(actions)
-	var generate := Button.new()
-	generate.text = "GENERATE IMAGE / VIDEO"
-	generate.pressed.connect(submit)
-	actions.add_child(generate)
+	generate_button = Button.new()
+	generate_button.text = "GENERATE IMAGE / VIDEO"
+	generate_button.pressed.connect(submit)
+	actions.add_child(generate_button)
 	var install := Button.new()
 	install.text = "INSTALL / REPAIR VISUAL MODULE"
 	install.pressed.connect(func(): install_requested.emit())
 	actions.add_child(install)
 	var clear := Button.new()
 	clear.text = "CLEAR"
-	clear.pressed.connect(func(): prompt_editor.clear(); reference_path.clear(); status_label.text = "Studio cleared")
+	clear.pressed.connect(func(): prompt_editor.clear(); reference_path.clear(); clear_result(); status_label.text = "Studio cleared")
 	actions.add_child(clear)
+	var open_result := Button.new()
+	open_result.text = "OPEN RESULT"
+	open_result.pressed.connect(func():
+		if not latest_result_path.is_empty() and FileAccess.file_exists(latest_result_path):
+			OS.shell_open(latest_result_path))
+	actions.add_child(open_result)
+	var open_folder := Button.new()
+	open_folder.text = "OPEN OUTPUT FOLDER"
+	open_folder.pressed.connect(func():
+		if not latest_result_path.is_empty():
+			OS.shell_open(latest_result_path.get_base_dir()))
+	actions.add_child(open_folder)
 	update_mode()
 
 func labeled_option(parent: Control, label_text: String, items: Array[String]) -> OptionButton:
@@ -151,6 +178,8 @@ func browse_reference() -> void:
 	dialog.popup_centered_ratio(0.75)
 
 func submit() -> void:
+	if generate_button.disabled:
+		return
 	var prompt := prompt_editor.text.strip_edges()
 	if prompt.is_empty():
 		status_label.text = "Describe the visual you want before generating."
@@ -169,9 +198,35 @@ func set_prompt(value: String, output_kind := "image") -> void:
 func set_status(value: String) -> void:
 	status_label.text = value
 
+func set_busy(value: bool) -> void:
+	generate_button.disabled = value
+	generate_button.text = "GENERATION RUNNING…" if value else "GENERATE IMAGE / VIDEO"
+
+func show_result(path: String) -> void:
+	latest_result_path = path
+	result_path_label.text = "RESULT: " + path
+	result_path_label.visible = true
+	var extension := path.get_extension().to_lower()
+	if extension in ["png", "jpg", "jpeg", "webp", "bmp"]:
+		var image := Image.load_from_file(path)
+		if not image.is_empty():
+			result_preview.texture = ImageTexture.create_from_image(image)
+			result_preview.visible = true
+	status_label.text = "COMPLETE • Result is ready below. Use Open Result or Open Output Folder."
+	set_busy(false)
+
+func clear_result() -> void:
+	latest_result_path = ""
+	result_preview.texture = null
+	result_preview.visible = false
+	result_path_label.text = ""
+	result_path_label.visible = false
+
 func reset_for_session() -> void:
 	prompt_editor.clear()
 	reference_path.clear()
 	kind_selector.select(0)
 	update_mode()
+	clear_result()
+	set_busy(false)
 	status_label.text = "Studio idle • fresh project session"
