@@ -600,6 +600,9 @@ var security_refresh_due_ms := 0
 var security_verify_requested := false
 var security_lockdown_active := false
 var security_wfp_driver_state := "Not installed"
+var security_firewall_result_path := ""
+var security_firewall_action := ""
+var security_firewall_deadline_ms := 0
 
 func _ready() -> void:
 	# We stage shutdown ourselves so llama.cpp can release CUDA before Godot tears
@@ -3054,6 +3057,7 @@ func _process(delta: float) -> void:
 	poll_supervised_run_jobs()
 	poll_security_audit()
 	poll_security_snapshot()
+	poll_firewall_action_result()
 	if bool(settings.get("security_center_enabled", false)) and bool(settings.get("network_guard_enabled", false)) and Time.get_ticks_msec() >= security_refresh_due_ms:
 		security_refresh_due_ms = Time.get_ticks_msec() + 4000
 		refresh_security_snapshot()
@@ -10223,6 +10227,9 @@ func queue_artifact_auto_fix(path: String, language: String, detail: String) -> 
 	artifact_total_retry_count += 1
 	artifact_repair_target_path = path
 	artifact_repair_language = language
+	# A traceback repair is code-only. Clear any screenshot left by an earlier
+	# user turn so an internal retry cannot silently invoke the vision model.
+	clear_attachment()
 	attach_file(path)
 	var app_specific_checks := "Check initialization order, every input path, background-work boundaries, UI-thread safety, cancellation/progress behavior, resource cleanup, and window bounds before answering."
 	var repair_context := (active_artifact_request + "\n" + attached_file_text).to_lower()
@@ -14352,10 +14359,40 @@ func run_firewall_admin_action(action: String, app_name := "", app_path := "", r
 	var safe_name := app_name.replace("'", "''")
 	var safe_path := app_path.replace("'", "''")
 	var safe_rule := rule_name.replace("'", "''")
-	var command := "Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','%s','-Action','%s','-AppName','%s','-AppPath','%s','-RuleName','%s')" % [safe_script, action, safe_name, safe_path, safe_rule]
+	security_firewall_result_path = ProjectSettings.globalize_path("user://firewall_action_result.json")
+	if FileAccess.file_exists(security_firewall_result_path):
+		DirAccess.remove_absolute(security_firewall_result_path)
+	security_firewall_action = action
+	security_firewall_deadline_ms = Time.get_ticks_msec() + 120000
+	var safe_result := security_firewall_result_path.replace("'", "''")
+	var command := "Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','%s','-Action','%s','-AppName','%s','-AppPath','%s','-RuleName','%s','-ResultPath','%s')" % [safe_script, action, safe_name, safe_path, safe_rule, safe_result]
 	OS.create_process("powershell.exe", PackedStringArray(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", command]), false)
-	show_toast("Windows administrator confirmation requested for " + action)
+	show_toast("Windows administrator confirmation requested • waiting to verify " + action)
 	security_refresh_due_ms = Time.get_ticks_msec() + 2500
+
+func poll_firewall_action_result() -> void:
+	if security_firewall_result_path.is_empty():
+		return
+	if FileAccess.file_exists(security_firewall_result_path):
+		var result = JSON.parse_string(FileAccess.get_file_as_string(security_firewall_result_path))
+		DirAccess.remove_absolute(security_firewall_result_path)
+		security_firewall_result_path = ""
+		security_firewall_deadline_ms = 0
+		if result is Dictionary and bool(result.get("success", false)):
+			show_toast("Firewall confirmed • " + str(result.get("message", security_firewall_action)))
+			log_line("FIREWALL", "Confirmed " + str(result.get("message", security_firewall_action)))
+			if bool(settings.get("security_center_enabled", false)):
+				refresh_security_snapshot()
+		else:
+			var reason := str(result.get("message", "Windows did not confirm the firewall change")) if result is Dictionary else "Invalid firewall result"
+			show_toast("Firewall change failed • " + reason)
+			log_line("FIREWALL ERROR", reason)
+		return
+	if security_firewall_deadline_ms > 0 and Time.get_ticks_msec() >= security_firewall_deadline_ms:
+		log_line("FIREWALL", "No result returned for %s; UAC may have been cancelled" % security_firewall_action)
+		show_toast("Firewall was not confirmed • UAC may have been cancelled")
+		security_firewall_result_path = ""
+		security_firewall_deadline_ms = 0
 
 func run_security_audit() -> void:
 	if not bool(settings.get("pc_commands_enabled", false)):
